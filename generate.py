@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # ==============================================================================
-# MODUŁ PPDA / OPPDA — WARIANT 1 (Zamrożone prawdziwe dane po GW8)
+# MODUŁ PPDA / OPPDA — Zamrożone prawdziwe dane po GW8
 # Gdy Understat wróci online, podmieniamy WYŁĄCZNIE tę jedną funkcję.
 # ==============================================================================
 def pobierz_ppda_oppda():
@@ -152,7 +152,7 @@ def resolve_official_name(name):
 # ==============================================================================
 # 2. TABELA PREMIER LEAGUE
 # ==============================================================================
-print("3/5 Przeliczanie Tabeli Premier League, Median (CN2/CN3), FDR i BW/BX...")
+print("3/5 Przeliczanie Tabeli Premier League, Median i wskaźników FDR...")
 
 ppda_baza = pobierz_ppda_oppda()
 finished_fix = fixtures_df[
@@ -232,7 +232,7 @@ def calc_takt_xgc90(r):
 df_clubs['Taktyczne xGC90'] = df_clubs.apply(calc_takt_xgc90, axis=1)
 df_clubs['xGD'] = (df_clubs['NPxG'] - df_clubs['NPxGA']) / m_denom
 
-def calc_fdr_ai(r):
+def calc_fdr_overall(r):
     mod_ppda = 0.5 if r['PPDA'] < med_ppda else (-0.5 if r['PPDA'] > 15 else 0.0)
     sila = r['xGD'] + mod_ppda
     if sila >= med_npxgc90 * 0.8: return 5
@@ -241,7 +241,7 @@ def calc_fdr_ai(r):
     elif sila >= -(med_npxgc90 * 0.5): return 2
     else: return 1
 
-def calc_bw_atk(r):
+def calc_fdr_atk(r):
     v = r['NPxGA'] / max(float(r['matches']), 1.0)
     if v < 1.1: return 5
     elif v < 1.35: return 4
@@ -249,7 +249,7 @@ def calc_bw_atk(r):
     elif v < 1.85: return 2
     else: return 1
 
-def calc_bx_def(r):
+def calc_fdr_def(r):
     v = r['NPxG'] / max(float(r['matches']), 1.0)
     if v > 1.9: return 5
     elif v > 1.6: return 4
@@ -257,13 +257,13 @@ def calc_bx_def(r):
     elif v > 1.0: return 2
     else: return 1
 
-df_clubs['FDR'] = df_clubs.apply(calc_fdr_ai, axis=1)
-df_clubs['BW_Atak'] = df_clubs.apply(calc_bw_atk, axis=1)
-df_clubs['BX_Obrona'] = df_clubs.apply(calc_bx_def, axis=1)
+df_clubs['FDR'] = df_clubs.apply(calc_fdr_overall, axis=1)
+df_clubs['FDR_Atak'] = df_clubs.apply(calc_fdr_atk, axis=1)
+df_clubs['FDR_Obrona'] = df_clubs.apply(calc_fdr_def, axis=1)
 
-short_to_ai = dict(zip(df_clubs['Skrót'], df_clubs['FDR']))
-short_to_bw = dict(zip(df_clubs['Skrót'], df_clubs['BW_Atak']))
-short_to_bx = dict(zip(df_clubs['Skrót'], df_clubs['BX_Obrona']))
+short_to_overall = dict(zip(df_clubs['Skrót'], df_clubs['FDR']))
+short_to_atk = dict(zip(df_clubs['Skrót'], df_clubs['FDR_Atak']))
+short_to_def = dict(zip(df_clubs['Skrót'], df_clubs['FDR_Obrona']))
 short_to_xga = dict(zip(df_clubs['Skrót'], df_clubs['xGA']))
 short_to_npxga = dict(zip(df_clubs['Skrót'], df_clubs['NPxGA']))
 short_to_xg = dict(zip(df_clubs['Skrót'], df_clubs['xG']))
@@ -272,9 +272,9 @@ short_to_ppda = dict(zip(df_clubs['Skrót'], df_clubs['PPDA']))
 team_to_xga = dict(zip(df_clubs['team'], df_clubs['xGA']))
 team_to_npxg = dict(zip(df_clubs['team'], df_clubs['NPxG']))
 team_to_matches = dict(zip(df_clubs['team'], df_clubs['matches'].replace(0, 1)))
-team_to_ai = dict(zip(df_clubs['team'], df_clubs['FDR']))
-team_to_bw = dict(zip(df_clubs['team'], df_clubs['BW_Atak']))
-team_to_bx = dict(zip(df_clubs['team'], df_clubs['BX_Obrona']))
+team_to_overall = dict(zip(df_clubs['team'], df_clubs['FDR']))
+team_to_atk = dict(zip(df_clubs['team'], df_clubs['FDR_Atak']))
+team_to_def = dict(zip(df_clubs['team'], df_clubs['FDR_Obrona']))
 max_matches = max(float(df_clubs['matches'].max()), 1.0)
 l5_denom = max(float(len(l5_gws)), 1.0)
 
@@ -310,9 +310,9 @@ for _, t_row in teams_df.sort_values('name').iterrows():
 
     row_fdr = {
         'Klub': tname,
-        'FDR_AI': int(team_to_ai.get(tname, 3)),
-        'BW_Atak': int(team_to_bw.get(tname, 3)),
-        'BX_Obrona': int(team_to_bx.get(tname, 3)),
+        'FDR_Overall': int(team_to_overall.get(tname, 3)),
+        'FDR_Atak': int(team_to_atk.get(tname, 3)),
+        'FDR_Obrona': int(team_to_def.get(tname, 3)),
         'fixtures': []
     }
     row_chip = {'Klub': tname, 'scores': []}
@@ -324,10 +324,10 @@ for _, t_row in teams_df.sort_values('name').iterrows():
     for gw_i in range(1, 39):
         m = sched_fix[(sched_fix['event'] == gw_i) & ((sched_fix['team_h'] == tid) | (sched_fix['team_a'] == tid))]
         if m.empty:
-            cell_obj = {'text': 'BLANK', 'opp': '', 'ha': '', 'fdr_ai': 0, 'fdr_bw': 0, 'fdr_bx': 0, 'matches': []}
+            cell_obj = {'text': 'BLANK', 'opp': '', 'ha': '', 'fdr_overall': 0, 'fdr_atk': 0, 'fdr_def': 0, 'matches': []}
             c_score = 0.0
         else:
-            parts, ai_l, bw_l, bx_l, m_details = [], [], [], [], []
+            parts, ov_l, atk_l, def_l, m_details = [], [], [], [], []
             c_score = 0.0
             for _, mr in m.iterrows():
                 if int(mr['team_h']) == tid:
@@ -337,11 +337,11 @@ for _, t_row in teams_df.sort_values('name').iterrows():
                     opp = id_to_short[int(mr['team_h'])]
                     ha = "A"
                 away_add = 1 if ha == "A" else 0
-                f_ai = min(5, short_to_ai.get(opp, 3) + away_add)
-                f_bw = min(5, short_to_bw.get(opp, 3) + away_add)
-                f_bx = min(5, short_to_bx.get(opp, 3) + away_add)
+                f_ov = min(5, short_to_overall.get(opp, 3) + away_add)
+                f_atk = min(5, short_to_atk.get(opp, 3) + away_add)
+                f_def = min(5, short_to_def.get(opp, 3) + away_add)
                 parts.append(f"{opp}-{ha}")
-                ai_l.append(f_ai); bw_l.append(f_bw); bx_l.append(f_bx)
+                ov_l.append(f_ov); atk_l.append(f_atk); def_l.append(f_def)
                 m_details.append((opp, ha))
 
                 opp_npxga_90 = short_to_npxga.get(opp, 0.0) / short_to_matches.get(opp, 1.0)
@@ -351,13 +351,13 @@ for _, t_row in teams_df.sort_values('name').iterrows():
                 'text': " + ".join(parts),
                 'opp': m_details[0][0],
                 'ha': m_details[0][1],
-                'fdr_ai': int(round(np.mean(ai_l))),
-                'fdr_bw': int(round(np.mean(bw_l))),
-                'fdr_bx': int(round(np.mean(bx_l))),
+                'fdr_overall': int(round(np.mean(ov_l))),
+                'fdr_atk': int(round(np.mean(atk_l))),
+                'fdr_def': int(round(np.mean(def_l))),
                 'matches': m_details
             }
 
-        slim = {k: cell_obj[k] for k in ['text', 'opp', 'ha', 'fdr_ai', 'fdr_bw', 'fdr_bx']}
+        slim = {k: cell_obj[k] for k in ['text', 'opp', 'ha', 'fdr_overall', 'fdr_atk', 'fdr_def']}
         row_fdr['fixtures'].append(slim)
         team_fixtures[tname][gw_i] = cell_obj
         team_fixtures_short[tshort][str(gw_i)] = slim
@@ -435,7 +435,7 @@ for _, p in df_players.iterrows():
 
     m_list, xgc_list, ev_cs_list, cs_prob_list = [], [], [], []
     for gw_num in rolling_gws:
-        fx = team_fixtures.get(klub, {}).get(gw_num, {'text': '', 'opp': '', 'ha': '', 'fdr_bw': 0, 'fdr_bx': 0, 'matches': []})
+        fx = team_fixtures.get(klub, {}).get(gw_num, {'text': '', 'opp': '', 'ha': '', 'fdr_atk': 0, 'fdr_def': 0, 'matches': []})
         if fx['matches']:
             xgc_v = sum(
                 (short_to_xga.get(o, 0.0) / short_to_matches.get(o, 1.0)) * (1.15 if h == "H" else 0.85)
@@ -452,7 +452,7 @@ for _, p in df_players.iterrows():
                 cs_matches.append(cs_m)
             cs_prob_gw = 1.0 - float(np.prod([1.0 - c for c in cs_matches]))
             ev_cs_gw = float(sum(cs_matches) * 4.0)
-            fdr_pos = fx['fdr_bw'] if poz in ["MID", "FWD"] else fx['fdr_bx']
+            fdr_pos = fx['fdr_atk'] if poz in ["MID", "FWD"] else fx['fdr_def']
         else:
             xgc_v, cs_prob_gw, ev_cs_gw, fdr_pos = 0.0, 0.0, 0.0, 0
 
@@ -529,7 +529,7 @@ for _, p in df_players.iterrows():
 kokpit_rows.sort(key=lambda x: x['EV_6GW'], reverse=True)
 
 # ==============================================================================
-# 5. SKANER WILDCARD I FREE HIT (Opcja 1: min. 3/5 kolejek >= MEDIANA)
+# 5. SKANER WILDCARD I FREE HIT (filtr WC: min. 3/5 kolejek >= MEDIANA)
 # ==============================================================================
 at_vals, top5_labels = [], []
 for gw_i in range(1, 39):
@@ -560,7 +560,6 @@ for i in range(38):
     elif at_v >= avg_at_19: fh_verdict = "✅ Dobry moment na atak"
     else: fh_verdict = "⚠️ Trudna (Giganci grają ze sobą)"
 
-    # Opcja 1: stabilność liczona względem MEDIANY zamiast zawyżonej średniej
     cnt_good = sum(1 for x in window_5 if x >= med_at_37)
     if aw_v == 0: wc_verdict = "⏳ Trwa zbieranie danych..."
     elif aw_v >= (avg_aw_37 + std_aw_37) and cnt_good >= 3: wc_verdict = "💣 ODPALAJ WILDCARD!"
@@ -634,7 +633,8 @@ html_app = f"""<!DOCTYPE html>
 <html lang="pl">
 <head>
 <meta charset="UTF-8">
-<title>FPL Plik V7 — Aplikacja Webowa</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FPL Plik</title>
 <style>
   :root {{ --excel-green: #107c41; --excel-border: #d4d4d4; --bg-soft: #eef2f0; }}
   * {{ box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }}
@@ -644,7 +644,7 @@ html_app = f"""<!DOCTYPE html>
     background: var(--excel-green); color: white; padding: 10px 18px;
     display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 15px; flex-wrap: wrap; gap: 8px;
   }}
-  .top-bar .badge {{ background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 4px; font-size: 12px; }}
+  .top-bar .badge {{ background: rgba(255,255,255,0.18); padding: 4px 10px; border-radius: 4px; font-size: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }}
 
   .toolbar {{
     background: var(--bg-soft); border-bottom: 1px solid var(--excel-border); padding: 8px 14px;
@@ -662,6 +662,26 @@ html_app = f"""<!DOCTYPE html>
   .mode-btn.active, .act-btn.primary {{ background: var(--excel-green); color: white; border-color: var(--excel-green); }}
   .act-btn:hover {{ filter: brightness(0.95); }}
   .act-btn.danger {{ color: #a8071a; border-color: #ffa39e; background: #fff1f0; }}
+
+  .info-icon {{
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; margin-left: 3px; cursor: help;
+    color: #107c41; opacity: 0.85; vertical-align: middle; padding: 0 2px;
+    transition: opacity 0.12s, transform 0.12s;
+  }}
+  .info-icon:hover {{ opacity: 1; transform: scale(1.15); }}
+  .top-bar .info-icon, .mode-btn.active .info-icon, th.gw-now .info-icon {{ color: #ffffff; opacity: 0.9; }}
+
+  #fplTooltip {{
+    display: none; position: fixed; z-index: 20000;
+    background: #1e293b; color: #f8fafc; padding: 10px 13px; border-radius: 7px;
+    font-size: 12.5px; line-height: 1.48; max-width: 340px; min-width: 190px;
+    box-shadow: 0 10px 26px rgba(0,0,0,0.32); border: 1px solid rgba(255,255,255,0.14);
+    pointer-events: none; text-align: left; font-weight: 400; white-space: normal;
+  }}
+  #fplTooltip b {{ color: #86efac; font-weight: 700; }}
+  #fplTooltip .tip-title {{ font-weight: 700; color: #ffffff; margin-bottom: 4px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 3px; }}
+  #fplTooltip .tip-muted {{ color: #cbd5e1; font-size: 11.5px; display: block; margin-top: 5px; }}
 
   .sheet-container {{ flex: 1; overflow: auto; background: white; }}
   .tab-view {{ display: none; width: 100%; height: 100%; flex-direction: column; }}
@@ -710,6 +730,15 @@ html_app = f"""<!DOCTYPE html>
   .verd-ok {{ background-color: #e9f7ef !important; color: #1e7e34 !important; font-weight: 600; text-align: left !important; }}
   .verd-warn {{ background-color: #fceaea !important; color: #842029 !important; text-align: left !important; }}
   .gw-highlight td {{ border-top: 2px solid #107c41 !important; border-bottom: 2px solid #107c41 !important; }}
+
+  .scanner-legend {{
+    margin: 12px 14px; padding: 11px 15px; background: #f3f8f5;
+    border: 1px solid #c5dfd0; border-left: 4px solid var(--excel-green);
+    border-radius: 5px; font-size: 12.5px; line-height: 1.5; color: #222;
+  }}
+  .scanner-legend-title {{ font-weight: 700; color: #0f5132; margin-bottom: 5px; font-size: 13px; }}
+  .scanner-legend ul {{ margin: 0; padding-left: 18px; }}
+  .scanner-legend li {{ margin-bottom: 3px; }}
 
   .planer-wrap {{ display: flex; flex-direction: column; gap: 16px; padding: 12px 14px 28px; }}
   .planer-card {{ border: 1px solid #d0d7d3; border-radius: 6px; background: white; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }}
@@ -830,12 +859,19 @@ html_app = f"""<!DOCTYPE html>
 </head>
 <body>
 
+<div id="fplTooltip"></div>
 <div id="playerDropdownMenu" onmousedown="event.preventDefault()"></div>
 <div id="planerToast"></div>
 
 <div class="top-bar">
-  <div>📊 FPL Plik V7 — LIVE FPL API + Wariant 1 (PPDA GW8) + Planer v3 + Forma L5</div>
-  <div class="badge">🕒 {updated_at} | Najbliższa: GW{next_gw_num} | L5: {l5_label} | CN2: {med_npxgc90:.3f} | CN3: {med_ppda:.2f}</div>
+  <div>📊 FPL Plik</div>
+  <div class="badge">
+    <span>🕒 {updated_at}</span>
+    <span>| Najbliższa: GW{next_gw_num}</span>
+    <span>| Forma L5: {l5_label}<span class="info-icon" data-tip="TOP_L5" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></span>
+    <span>| Mediana xGC/90: {med_npxgc90:.3f}<span class="info-icon" data-tip="TOP_XGC" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></span>
+    <span>| Mediana PPDA: {med_ppda:.2f}<span class="info-icon" data-tip="TOP_PPDA" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></span>
+  </div>
 </div>
 
 <div class="sheet-container">
@@ -843,8 +879,8 @@ html_app = f"""<!DOCTYPE html>
   <!-- 1. TABELA PREMIER LEAGUE -->
   <div id="tab-pl" class="tab-view">
     <div class="toolbar">
-      <b>🏆 Tabela Premier League (LIVE FPL API + zamrożone PPDA/OPPDA po GW8)</b>
-      <span style="margin-left:auto; color:#555;">Kliknij nagłówek kolumny, aby posortować</span>
+      <b>🏆 Tabela Premier League</b>
+      <span style="margin-left:auto; color:#555;">Najedź na ⓘ, aby zobaczyć objaśnienie · Kliknij nagłówek, aby posortować</span>
     </div>
     <div class="table-scroll"><table class="excel-table" id="tbl-pl"></table></div>
   </div>
@@ -868,10 +904,10 @@ html_app = f"""<!DOCTYPE html>
   <div id="tab-fdr" class="tab-view">
     <div class="toolbar">
       <b>Tryb kolorowania kalendarza:</b>
-      <button class="mode-btn active" onclick="setFdrMode('fdr_ai', this)">Ogólny (AI — jak Brudnopis)</button>
-      <button class="mode-btn" onclick="setFdrMode('fdr_bw', this)">Dla Ataku (BW — MID/FWD)</button>
-      <button class="mode-btn" onclick="setFdrMode('fdr_bx', this)">Dla Obrony (BX — DEF/GKP)</button>
-      <span style="margin-left:auto; font-size:12px; color:#555;">Reguła: MIN(5, Wskaźnik rywala + 1 za wyjazd A)</span>
+      <button class="mode-btn active" onclick="setFdrMode('fdr_overall', this)">FDR Ogólny <span class="info-icon" data-tip="FDR_ALL" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></button>
+      <button class="mode-btn" onclick="setFdrMode('fdr_atk', this)">Atak (MID/FWD) <span class="info-icon" data-tip="FDR_ATK" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></button>
+      <button class="mode-btn" onclick="setFdrMode('fdr_def', this)">Obrona (DEF/GKP) <span class="info-icon" data-tip="FDR_DEF" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></button>
+      <span style="margin-left:auto; font-size:12px; color:#555;">Reguła: na wyjeździe (A) trudność rywala +1 (maks. 5)</span>
     </div>
     <div class="table-scroll"><table class="excel-table" id="tbl-fdr"></table></div>
   </div>
@@ -926,7 +962,7 @@ html_app = f"""<!DOCTYPE html>
   <!-- 5. SKANER WILDCARD I FREE HIT -->
   <div id="tab-scanner" class="tab-view">
     <div class="toolbar">
-      <b>💣 Skaner Wildcard (5 GW) i Free Hit (filtr WC: min. 3/5 GW &ge; Mediana)</b>
+      <b>💣 Skaner Wildcard (5 GW) i Free Hit</b>
       <div class="toolbar-group" style="margin-left:16px;">
         <label>Zakres kolejek:</label>
         <select id="sScope" onchange="renderScanner()">
@@ -934,11 +970,19 @@ html_app = f"""<!DOCTYPE html>
           <option value="ALL">Cały sezon (GW1–GW38)</option>
         </select>
       </div>
-      <span style="margin-left:auto; font-size:12px; color:#555;">Próg FH (Śr+SD GW1-19): {(avg_at_19+std_at_19):.2f} | Próg WC (Śr+SD): {(avg_aw_37+std_aw_37):.2f} | Mediana GW: {med_at_37:.2f}</span>
+      <span style="margin-left:auto; font-size:12px; color:#555;">Próg Free Hit: {(avg_at_19+std_at_19):.2f} | Próg Wildcard: {(avg_aw_37+std_aw_37):.2f} | Mediana kolejki: {med_at_37:.2f}</span>
     </div>
     <div class="table-scroll">
       <table class="excel-table" id="tbl-scanner"></table>
-      <div class="sub-section">📋 Podgląd Tabeli Chipów (siła 20 klubów na GW — źródło dla Skanera Free Hit)</div>
+      <div class="scanner-legend">
+        <div class="scanner-legend-title">ℹ️ Jak działa Skaner Wildcard i Free Hit?</div>
+        <ul>
+          <li><b>Skąd biorą się punkty:</b> w każdej kolejce algorytm liczy siłę ofensywną meczu dla każdego z 20 klubów (<code>NPxG drużyny × NPxGA rywala</code>, skorygowane o grę u siebie/na wyjeździe — pełne liczby widać niżej w Tabeli Chipów). Wynik kolejki to suma <b>5 najlepszych klubów</b>.</li>
+          <li><b>Free Hit (1 GW):</b> werdykt <b>💣 WYBUCHOWA</b> zapala się, gdy wynik kolejki przekracza próg statystyczny (średnia + odchylenie standardowe z I rundy = <b>{(avg_at_19+std_at_19):.2f}</b>) — oznacza wyjątkowo korzystną kolejkę dla faworytów.</li>
+          <li><b>Wildcard (5 GW):</b> średnia z 5 kolejnych kolejek (od danej GW włącznie). Werdykt <b>💣 ODPALAJ WILDCARD!</b> pojawia się dopiero, gdy średnia 5-kolejkowa przekracza próg (<b>{(avg_aw_37+std_aw_37):.2f}</b>) <b>oraz</b> minimum 3 z 5 kolejek osiągają co najmniej ligową medianę (<b>{med_at_37:.2f}</b>) — chroni to przed pułapką jednej łatwej kolejki maskującej trudny terminarz.</li>
+        </ul>
+      </div>
+      <div class="sub-section">📋 Podgląd Tabeli Chipów (siła 20 klubów na GW — źródło dla Skanera)</div>
       <table class="excel-table" id="tbl-chips"></table>
     </div>
   </div>
@@ -1001,7 +1045,7 @@ html_app = f"""<!DOCTYPE html>
   <div class="sheet-tab" onclick="switchTab('pl', this)">1. 🏆 Tabela Premier League</div>
   <div class="sheet-tab" onclick="switchTab('players', this)">2. 👤 Tabela Piłkarzy</div>
   <div class="sheet-tab" onclick="switchTab('fdr', this)">3. 📅 FDR</div>
-  <div class="sheet-tab active" onclick="switchTab('kokpit', this)">4. 🎛️ Kokpit (L5)</div>
+  <div class="sheet-tab active" onclick="switchTab('kokpit', this)">4. 🎛️ Kokpit</div>
   <div class="sheet-tab" onclick="switchTab('scanner', this)">5. 💣 Skaner Wildcard i Free Hit</div>
   <div class="sheet-tab" onclick="switchTab('planer', this)">6. 🗓️ Planer</div>
 </div>
@@ -1022,10 +1066,237 @@ const nextGwNum = {next_gw_num};
 const defaultSquad = {json_def_squad};
 const defaultTargets = {json_def_targets};
 
+// ============================================================================
+// SYSTEM DYMKÓW (TOOLTIPÓW) ⓘ — komputer (hover) + telefon (tap)
+// ============================================================================
+const TIPS = {{
+  TOP_L5: {{
+    title: 'Okno formy (L5)',
+    body: 'Ostatnie 5 zakończonych kolejek, na bazie których liczone są kolumny formy L5 i strzałki trendu w Kokpicie.'
+  }},
+  TOP_XGC: {{
+    title: 'Ligowa mediana xGC/90',
+    body: 'Środkowa wartość oczekiwanych bramek traconych na mecz w Premier League (punkt odniesienia dla FDR i Scenariuszy meczowych).'
+  }},
+  TOP_PPDA: {{
+    title: 'Ligowa mediana PPDA',
+    body: 'Środkowa wartość intensywności pressingu w lidze — oddziela drużyny pressujące wysoko od broniących głębiej.'
+  }},
+
+  // Zakładka 1: Tabela Premier League
+  PL_XG: {{
+    title: 'xG (Expected Goals)',
+    body: 'Oczekiwane bramki zdobyte. Suma jakości wszystkich oddanych strzałów drużyny — pokazuje, ile goli powinna była strzelić.'
+  }},
+  PL_NPXG: {{
+    title: 'NPxG (Non-Penalty xG)',
+    body: 'Oczekiwane bramki bez rzutów karnych — lepiej oddaje siłę ataku z gry.<span class="tip-muted">Uwaga: podczas przerwy Understatu tymczasowo równe xG.</span>'
+  }},
+  PL_XGA: {{
+    title: 'xGA (Expected Goals Against)',
+    body: 'Oczekiwane bramki stracone. Suma jakości strzałów dopuszczonych przez obronę — im niższa wartość, tym szczelniejsza defensywa.'
+  }},
+  PL_NPXGA: {{
+    title: 'NPxGA (Non-Penalty xGA)',
+    body: 'Oczekiwane bramki stracone bez rzutów karnych.<span class="tip-muted">Uwaga: podczas przerwy Understatu tymczasowo równe xGA.</span>'
+  }},
+  PL_PPDA: {{
+    title: 'PPDA (Intensywność pressingu)',
+    body: 'Liczba podań, na jakie zespół pozwala rywalowi na jego połowie, zanim spróbuje odebrać piłkę. <b>Im niższa wartość, tym agresywniejszy pressing</b> (poniżej 10 = elita pressingu, powyżej 14 = cofnięty blok).<span class="tip-muted">Tymczasowo zamrożone po GW8 do powrotu Understatu.</span>'
+  }},
+  PL_OPPDA: {{
+    title: 'OPPDA (Odporność na pressing)',
+    body: 'Odwrotność PPDA — średnia liczba podań, jaką drużyna wymienia na własnej połowie, zanim przeciwnik zaatakuje ją pressingiem. <b>Im wyższa wartość</b>, tym łatwiej zespół rozgrywa piłkę (albo rywale celowo cofają się przeciwko niemu głęboko w obronę).'
+  }},
+  PL_TAKT: {{
+    title: 'Taktyczne xGC90',
+    body: 'Skorygowane zagrożenie defensywne na mecz (<b>xGA / mecze × mnożnik stylu</b>). Zwykłe xGA nie mówi, jak drużyna broni, więc algorytm nakłada korektę za styl pressingu:<br>• ostry pressing (PPDA &lt; 11) i szczelna obrona (&lt; 1.2) → <b>×0.85</b> (duszą rywala)<br>• ostry pressing (PPDA &lt; 11), dziurawa obrona (≥ 1.2) → <b>×1.20</b> (samobójczy pressing, autostrada na kontry)<br>• głęboki blok (PPDA &gt; 14) i szczelna obrona (&lt; 1.2) → <b>×0.90</b> (szczelny autobus)<br>• głęboki blok (PPDA &gt; 14) i słaba obrona (≥ 1.2) → <b>×1.05</b> (pasywni i dziurawi).<br><b>Im niższa liczba, tym trudniej strzelić temu zespołowi gola.</b>'
+  }},
+  PL_XGD: {{
+    title: 'xGD (Różnica xG na mecz)',
+    body: 'Średnia różnica oczekiwanych bramek na mecz: <b>(NPxG − NPxGA) / mecze</b>. Pokazuje realną siłę netto drużyny niezależnie od szczęścia w wykończeniu. Wartość <b>dodatnia (+)</b> oznacza przewagę jakościową; <b>ujemna (−)</b> — że zespół częściej jest zdominowany.'
+  }},
+  PL_FDR: {{
+    title: 'FDR (Wskaźnik trudności rywala)',
+    body: 'Własny wskaźnik trudności rywala (<b>1 = najłatwiejszy, 5 = najtrudniejszy</b>). Zamiast sztywnych ocen z FPL liczony jest na żywo z siły zespołu: <b>xGD</b> korygowane za pressing (+0.5 gdy zespół pressuje mocniej niż mediana ligi, lub −0.5 gdy jest bardzo pasywny przy PPDA &gt; 15). Wynik dzielony jest na progi 1–5 względem ligowej mediany straconego xG.'
+  }},
+
+  // Zakładka 2: Tabela Piłkarzy
+  P_XGCHAIN: {{
+    title: 'xGChain',
+    body: 'Całkowity udział w akcjach bramkowych (wskaźnik podglądowy do oceny potencjału ofensywnego — nie wchodzi do wzorów EV). Docelowo oznacza sumę xG każdej akcji, w której piłkarz dotknął piłki, nawet 2–3 podania przed strzałem.<span class="tip-muted">Tymczasowo, podczas przerwy Understatu, kolumna pokazuje oficjalne xGI z FPL (xG + xA).</span>'
+  }},
+
+  // Zakładka 3: FDR
+  FDR_ALL: {{
+    title: 'FDR Ogólny',
+    body: 'Ogólna trudność rywala wyliczona na podstawie jego bilansu jakości (xGD) i intensywności pressingu (PPDA). <b>Im wyższa liczba (1–5), tym trudniejszy dla Ciebie mecz</b> (na wyjeździe +1, maks. 5).'
+  }},
+  FDR_ATK: {{
+    title: 'Trudność dla Ataku (MID / FWD)',
+    body: 'Trudność meczu dla Twoich graczy ofensywnych wyliczona na podstawie szczelności obrony rywala (NPxGA na mecz). <b>Im wyższa liczba (1–5), tym trudniejszy mecz dla Twojego ataku</b> (na wyjeździe +1, maks. 5).'
+  }},
+  FDR_DEF: {{
+    title: 'Trudność dla Obrony (DEF / GKP)',
+    body: 'Trudność meczu dla Twoich obrońców i bramkarzy wyliczona na podstawie siły ataku rywala (NPxG na mecz). <b>Im wyższa liczba (1–5), tym trudniejszy mecz o czyste konto</b> (na wyjeździe +1, maks. 5).'
+  }},
+
+  // Zakładka 4: Kokpit
+  K_XGI90: {{
+    title: 'xGI90 (Sezon)',
+    body: 'Oczekiwany udział przy golach (<b>NPxG + xA</b>) w przeliczeniu na pełne 90 minut za cały sezon. Pokazuje bazowy potencjał ofensywny piłkarza.'
+  }},
+  K_MIN_L5: {{
+    title: 'Min L5 (Minuty z 5 GW)',
+    body: 'Suma minut z ostatnich 5 zakończonych kolejek (maks. 450). Żółte tło (<b>&lt; 175 min</b>) ostrzega przed rotacją, kontuzją lub utratą miejsca w składzie.'
+  }},
+  K_XG_L5: {{
+    title: 'xG L5 (Forma strzelecka)',
+    body: 'Suma oczekiwanych bramek (xG) z ostatnich 5 kolejek — pokazuje, czy gracz w ostatnim czasie regularnie dochodzi do sytuacji bramkowych.'
+  }},
+  K_XGI90_L5: {{
+    title: 'xGI90 L5 (Trend formy)',
+    body: 'Aktualna forma ofensywna na 90 minut z ostatnich 5 kolejek porównana ze średnią z całego sezonu:<br>📈 <b>zwyżka formy</b> (co najmniej +20% vs sezon)<br>➡️ <b>forma stabilna</b><br>📉 <b>spadek formy</b> (co najmniej −20% vs sezon)<br>⏸️ <b>za mało minut</b> do oceny (&lt; 90 min w L5).'
+  }},
+  K_XGC_TEAM: {{
+    title: 'xGC/90 Drużyny',
+    body: 'Ogólne xGC całej drużyny w przeliczeniu na jeden mecz. <b>Im niższa wartość, tym szczelniejsza defensywa zespołu.</b>'
+  }},
+  K_W1: {{
+    title: 'Werdykt ofensywy',
+    body: 'Ocena czysto ofensywna oparta na <b>xGI90</b> (liczona również dla obrońców — pomaga wyłapać groźnych wahadłowych i stoperów przy stałych fragmentach).'
+  }},
+  K_OBR: {{
+    title: 'Ocena obrony',
+    body: 'Szybka ocena defensywy zespołu na podstawie xGC/90 drużyny: <b>🛡️ Mur</b> przy xGC/90 ≤ 1.30, powyżej <b>⚠️ Dziurawi</b>.'
+  }},
+  K_CS: {{
+    title: 'Szansa na CS (Czyste konto)',
+    body: 'Prawdopodobieństwo czystego konta w najbliższej kolejce z <b>rozkładu Poissona</b>. Łączy xGC/90 Twojej drużyny z siłą ataku rywala (xG/90), koryguje za boisko (×0.85 u siebie / ×1.15 na wyjeździe) i dodaje +15% bonusu, gdy oba wskaźniki są poniżej 1.5.'
+  }},
+  K_EV_GW: {{
+    title: 'EV GW (Predykcja na najbliższą kolejkę)',
+    body: 'Prognoza <b>punktów dodatkowych</b> na najbliższą kolejkę (<b>nie zawiera</b> standardowych 2 pkt za występ, bonusów BPS ani obron bramkarza).<br>• <b>MID / FWD:</b> xGI90 × (GC Rywala H/A ÷ 1.5) × mnożnik pozycji (4.0 / 3.5) × Booster scenariusza<br>• <b>DEF / GKP:</b> Szansa na CS × 4 pkt.'
+  }},
+  K_W2: {{
+    title: 'Werdykt (Poz)',
+    body: 'Werdykt ogólny dostosowany do pozycji zawodnika: dla <b>DEF / GKP</b> ocenia szczelność obrony drużyny (xGC/90), a dla <b>MID / FWD</b> produkcję ofensywną (xGI90).'
+  }},
+  K_EO: {{
+    title: 'Status EO (Posiadanie)',
+    body: 'Rola zawodnika względem reszty graczy FPL:<br>• <b>🗡️ Super Diff (Miecz)</b> — poniżej 10% posiadania (pozwala gonić w tabeli)<br>• <b>🛡️ Szablon (Tarcza)</b> — od 10% w górę (chroni Twoją pozycję).'
+  }},
+  K_GC_OPP: {{
+    title: 'GC Rywala (H/A)',
+    body: 'Oczekiwane bramki tracone na mecz przez najbliższego rywala, <b>już skorygowane o mnożnik boiska</b>: ×1.15 gdy grasz u siebie (H) lub ×0.85 na wyjeździe (A).<span class="tip-muted">Korekta za styl pressingu (Booster) wchodzi osobno dopiero w EV GW, żeby nie mnożyć jej podwójnie.</span>'
+  }},
+  K_EV_6GW: {{
+    title: 'EV 6GW (Predykcja na 6 kolejek)',
+    body: 'Średnia ważona prognoza punktów dodatkowych na <b>6 najbliższych kolejek</b> (bliższe mecze ważą więcej niż odległe; bez 2 pkt za występ i bonusów). Dla <b>MID / FWD</b> bazuje na obronach 6 rywali (z korektą H/A), a dla <b>DEF / GKP</b> na szansach czystego konta w tych 6 meczach.'
+  }},
+  K_SCEN: {{
+    title: 'Przewidywany Scenariusz',
+    body: 'Taktyczny profil najbliższego rywala wyznaczony z porównania jego pressingu (<b>PPDA</b>) i obrony (<b>xGA/90</b>) z medianą ligi. Nakłada mnożnik (<b>Booster</b>) do EV GW dla ataku:<br>• 🎁 Samobójczy Pressing → <b>×1.25</b><br>• 🎪 Chłopcy do bicia → <b>×1.20</b><br>• 🚧 Elitarny Pressing → <b>×0.85</b><br>• 🧱 Elitarny Autobus → <b>×0.80</b>.'
+  }},
+
+  // Zakładka 5: Skaner Wildcard i Free Hit
+  S_FH_SC: {{
+    title: 'Skaner Free Hit (Wynik 1 GW)',
+    body: 'Suma siły ofensywnej <b>5 najlepszych klubów</b> w tej kolejce (z Tabeli Chipów niżej). Im wyższa wartość, tym lepsze mecze mają faworyci.'
+  }},
+  S_FH_VR: {{
+    title: 'Werdykt Free Hit',
+    body: 'Ocena opłacalności chipu Free Hit w tej jednej kolejce. <b>💣 WYBUCHOWA</b> zapala się po przekroczeniu progu statystycznego (średnia + odchylenie standardowe).'
+  }},
+  S_WC_SC: {{
+    title: 'Skaner Wildcard (Średnia 5 GW)',
+    body: 'Średni wynik z <b>5 kolejnych kolejek</b> (od tej kolejki włącznie). Pokazuje łączną jakość kalendarza na dłuższe okno.'
+  }},
+  S_WC_VR: {{
+    title: 'Werdykt Wildcard',
+    body: '<b>💣 ODPALAJ WILDCARD!</b> wymaga spełnienia dwóch warunków: średnia 5-kolejkowa powyżej progu (średnia + SD) <b>oraz</b> min. 3 z 5 kolejek co najmniej na poziomie ligowej mediany.'
+  }},
+
+  // Zakładka 6: Planer
+  PLR_STATUS: {{
+    title: 'Status gracza w Planerze',
+    body: 'Określa, jak Planer traktuje piłkarza:<br>• <b>💎 Premium</b> — wyłączony z alarmu sprzedaży (trzymasz niezależnie od meczów)<br>• <b>🪵 Słup</b> — tani rezerwowy na ławkę (bez alarmu sprzedaży; priorytet przy Auto-ławce)<br>• <b>♻️ Rotacja</b> — zwykły gracz oceniany pod kątem terminarza.'
+  }},
+  PLR_DEC: {{
+    title: 'Decyzja (Alarm kalendarzowy)',
+    body: 'Automatycznie ostrzega, jeśli w ciągu najbliższych 12 kolejek gracz ma serię <b>3 trudnych meczów pod rząd</b> (trudność 4 lub 5 dopasowana do pozycji). Nie dotyczy graczy ze statusem 💎 Premium i 🪵 Słup.'
+  }},
+  PLR_OUTIN: {{
+    title: 'Kolumna OUT / IN',
+    body: 'Wpisz numer kolejki sprzedaży (<b>OUT</b>) w składzie albo zakupu (<b>IN</b>) w celach. Kafelki poza czasem gry w zespole wyszarzają się, a Tabela 2 na dole automatycznie składa aktualną kadrę na wybraną kolejkę.<span class="tip-muted">Wskazówka: kliknij dowolny kafelek meczu, aby posadzić gracza na ławce (Ł).</span>'
+  }}
+}};
+
+let pinnedTipEl = null;
+
+function tipIcon(key) {{
+  if (!key || !TIPS[key]) return '';
+  return `<span class="info-icon" data-tip="${{key}}" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span>`;
+}}
+
+function positionTooltip(anchorEl) {{
+  const box = document.getElementById('fplTooltip');
+  const rect = anchorEl.getBoundingClientRect();
+  box.style.visibility = 'hidden';
+  box.style.display = 'block';
+  const bw = box.offsetWidth;
+  const bh = box.offsetHeight;
+  const pad = 10;
+
+  let left = rect.left + rect.width / 2 - bw / 2;
+  if (left < pad) left = pad;
+  if (left + bw > window.innerWidth - pad) left = window.innerWidth - bw - pad;
+
+  let top = rect.bottom + 8;
+  if (top + bh > window.innerHeight - pad) {{
+    top = rect.top - bh - 8;
+    if (top < pad) top = pad;
+  }}
+
+  box.style.left = left + 'px';
+  box.style.top = top + 'px';
+  box.style.visibility = 'visible';
+}}
+
+function showTip(anchorEl) {{
+  const key = anchorEl.getAttribute('data-tip');
+  const data = TIPS[key];
+  if (!data) return;
+  const box = document.getElementById('fplTooltip');
+  box.innerHTML = `<div class="tip-title">${{data.title}}</div><div>${{data.body}}</div>`;
+  positionTooltip(anchorEl);
+}}
+
+function hideTip(force) {{
+  if (!force && pinnedTipEl) return;
+  pinnedTipEl = null;
+  document.getElementById('fplTooltip').style.display = 'none';
+}}
+
+function toggleTip(anchorEl) {{
+  if (pinnedTipEl === anchorEl) {{
+    hideTip(true);
+  }} else {{
+    pinnedTipEl = anchorEl;
+    showTip(anchorEl);
+  }}
+}}
+
+document.addEventListener('click', (e) => {{
+  if (pinnedTipEl && !e.target.classList.contains('info-icon')) hideTip(true);
+}});
+window.addEventListener('resize', () => hideTip(true));
+document.addEventListener('scroll', () => hideTip(true), true);
+
 let plSort = {{ col: 'points', asc: false }};
 let pSort = {{ col: 'G', asc: false }};
 let kSort = {{ col: 'EV_6GW', asc: false }};
-let fdrMode = 'fdr_ai';
+let fdrMode = 'fdr_overall';
 let planerCellMode = 'text';
 let selectedLineupGw = planerGWs[0] || nextGwNum;
 let lastPlacedPlayer = null;
@@ -1122,6 +1393,7 @@ function showToast(msg) {{
 
 function switchTab(id, el) {{
   closePlayerDropdown();
+  hideTip(true);
   document.querySelectorAll('.tab-view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
   document.getElementById('tab-' + id).classList.add('active');
@@ -1133,11 +1405,20 @@ function cmpVal(a, b, asc) {{
   return asc ? (a - b) : (b - a);
 }}
 
+// ============================================================================
+// 1. TABELA PREMIER LEAGUE
+// ============================================================================
+const PL_TIP_MAP = {{
+  'xG': 'PL_XG', 'NPxG': 'PL_NPXG', 'xGA': 'PL_XGA', 'NPxGA': 'PL_NPXGA',
+  'PPDA': 'PL_PPDA', 'OPPDA': 'PL_OPPDA', 'Taktyczne xGC90': 'PL_TAKT',
+  'xGD': 'PL_XGD', 'FDR': 'PL_FDR'
+}};
+
 function renderPL() {{
   const cols = Object.keys(dataPL[0] || {{}});
   const rows = [...dataPL].sort((a, b) => cmpVal(a[plSort.col], b[plSort.col], plSort.asc));
   let html = '<thead><tr><th>#</th>' + cols.map(c =>
-    `<th onclick="sortPL('${{c}}')">${{c}} ${{plSort.col===c ? (plSort.asc?'▲':'▼') : ''}}</th>`
+    `<th onclick="sortPL('${{c}}')">${{c}}${{tipIcon(PL_TIP_MAP[c])}} ${{plSort.col===c ? (plSort.asc?'▲':'▼') : ''}}</th>`
   ).join('') + '</tr></thead><tbody>';
   rows.forEach((r, idx) => {{
     html += `<tr><td class="text-center">${{idx+1}}</td>`;
@@ -1154,6 +1435,9 @@ function renderPL() {{
 }}
 function sortPL(c) {{ plSort = {{ col: c, asc: plSort.col === c ? !plSort.asc : false }}; renderPL(); }}
 
+// ============================================================================
+// 2. TABELA PIŁKARZY
+// ============================================================================
 function initPlayersFilter() {{
   const teams = [...new Set(dataPlayers.map(p => p.team))].sort();
   const sel = document.getElementById('pTeam');
@@ -1178,7 +1462,7 @@ function renderPlayers() {{
   document.getElementById('pCount').innerText = `Piłkarze: ${{rows.length}} / ${{dataPlayers.length}}`;
   const cols = ['player','team','apps','min','G','A','xG','NPxG','xA','xGChain','xG90','xA90','Pozycja','Posiadanie','Cena'];
   let html = '<thead><tr><th>#</th>' + cols.map(c =>
-    `<th onclick="sortPlayers('${{c}}')">${{c}} ${{pSort.col===c ? (pSort.asc?'▲':'▼') : ''}}</th>`
+    `<th onclick="sortPlayers('${{c}}')">${{c}}${{c === 'xGChain' ? tipIcon('P_XGCHAIN') : ''}} ${{pSort.col===c ? (pSort.asc?'▲':'▼') : ''}}</th>`
   ).join('') + '</tr></thead><tbody>';
   rows.forEach((r, idx) => {{
     html += `<tr><td class="text-center">${{idx+1}}</td>`;
@@ -1196,6 +1480,9 @@ function renderPlayers() {{
 }}
 function sortPlayers(c) {{ pSort = {{ col: c, asc: pSort.col === c ? !pSort.asc : false }}; renderPlayers(); }}
 
+// ============================================================================
+// 3. FDR
+// ============================================================================
 function setFdrMode(mode, btn) {{
   fdrMode = mode;
   document.querySelectorAll('#tab-fdr .mode-btn').forEach(b => b.classList.remove('active'));
@@ -1203,7 +1490,11 @@ function setFdrMode(mode, btn) {{
   renderFDR();
 }}
 function renderFDR() {{
-  let html = '<thead><tr><th class="sticky-col">Klub</th><th>FDR (AI)</th><th>Atak (BW)</th><th>Obrona (BX)</th>';
+  let html = `<thead><tr>
+    <th class="sticky-col">Klub</th>
+    <th>FDR Ogólny${{tipIcon('FDR_ALL')}}</th>
+    <th>Atak${{tipIcon('FDR_ATK')}}</th>
+    <th>Obrona${{tipIcon('FDR_DEF')}}</th>`;
   gwMeta.forEach(g => {{
     const nowCls = g.gw === nextGwNum ? 'gw-now' : '';
     html += `<th class="${{nowCls}}">${{g.label}}<br><span style="font-weight:400;font-size:10px;">${{g.short_date}}</span></th>`;
@@ -1211,15 +1502,18 @@ function renderFDR() {{
   html += '</tr></thead><tbody>';
   dataFDR.forEach(r => {{
     html += `<tr><td class="text-left sticky-col"><b>${{escHtml(r.Klub)}}</b></td>`;
-    html += `<td class="fdr-${{r.FDR_AI}}">${{r.FDR_AI}}</td>`;
-    html += `<td class="fdr-${{r.BW_Atak}}">${{r.BW_Atak}}</td>`;
-    html += `<td class="fdr-${{r.BX_Obrona}}">${{r.BX_Obrona}}</td>`;
+    html += `<td class="fdr-${{r.FDR_Overall}}">${{r.FDR_Overall}}</td>`;
+    html += `<td class="fdr-${{r.FDR_Atak}}">${{r.FDR_Atak}}</td>`;
+    html += `<td class="fdr-${{r.FDR_Obrona}}">${{r.FDR_Obrona}}</td>`;
     r.fixtures.forEach(fx => {{ html += `<td class="fdr-${{fx[fdrMode]}}">${{fx.text}}</td>`; }});
     html += '</tr>';
   }});
   document.getElementById('tbl-fdr').innerHTML = html + '</tbody>';
 }}
 
+// ============================================================================
+// 4. KOKPIT
+// ============================================================================
 function getKokpitSortValue(row, col) {{
   if (['m1','m2','m3','m4','m5','m6'].includes(col)) return row[col].fdr;
   if (col.startsWith('xgc')) return row['m' + col.slice(3)].xgc;
@@ -1257,21 +1551,21 @@ function renderKokpit() {{
     {{ k: 'Klub', lbl: 'Klub', cls: 'text-left' }},
     {{ k: 'Cena', lbl: 'Cena' }},
     {{ k: 'Minuty', lbl: 'Minuty' }},
-    {{ k: 'xGI90', lbl: 'xGI90' }},
-    {{ k: 'Min_L5', lbl: 'Min L5', thCls: 'l5-hdr', cls: 'l5-col', isMinL5: true }},
-    {{ k: 'xG_L5', lbl: 'xG L5', thCls: 'l5-hdr', cls: 'l5-col', fmt: v => Number(v).toFixed(2) }},
-    {{ k: 'xGI90_L5', lbl: 'xGI90 L5', thCls: 'l5-hdr', isL5Trend: true }},
-    {{ k: 'xGC90_Team', lbl: 'xGC/90 Drużyny' }},
-    {{ k: 'Werdykt1', lbl: 'Werdykt', cls: 'text-left' }},
-    {{ k: 'Ocena_Obrony', lbl: 'Ocena obrony', cls: 'text-left' }},
-    {{ k: 'Szansa_CS', lbl: 'Szansa na CS', fmt: v => v + '%' }},
-    {{ k: 'EV_GW', lbl: 'EV GW' }},
+    {{ k: 'xGI90', lbl: 'xGI90', tip: 'K_XGI90' }},
+    {{ k: 'Min_L5', lbl: 'Min L5', thCls: 'l5-hdr', cls: 'l5-col', isMinL5: true, tip: 'K_MIN_L5' }},
+    {{ k: 'xG_L5', lbl: 'xG L5', thCls: 'l5-hdr', cls: 'l5-col', fmt: v => Number(v).toFixed(2), tip: 'K_XG_L5' }},
+    {{ k: 'xGI90_L5', lbl: 'xGI90 L5', thCls: 'l5-hdr', isL5Trend: true, tip: 'K_XGI90_L5' }},
+    {{ k: 'xGC90_Team', lbl: 'xGC/90 Drużyny', tip: 'K_XGC_TEAM' }},
+    {{ k: 'Werdykt1', lbl: 'Werdykt (Atak)', cls: 'text-left', tip: 'K_W1' }},
+    {{ k: 'Ocena_Obrony', lbl: 'Ocena obrony', cls: 'text-left', tip: 'K_OBR' }},
+    {{ k: 'Szansa_CS', lbl: 'Szansa na CS', fmt: v => v + '%', tip: 'K_CS' }},
+    {{ k: 'EV_GW', lbl: 'EV GW', tip: 'K_EV_GW' }},
     {{ k: 'Pozycja', lbl: 'Pozycja', cls: 'text-center' }},
     {{ k: 'Posiadanie', lbl: 'Posiadanie', fmt: v => v + '%' }},
-    {{ k: 'Werdykt2', lbl: 'Werdykt (Poz)', cls: 'text-left' }},
-    {{ k: 'Status_EO', lbl: 'Status EO', cls: 'text-left' }},
+    {{ k: 'Werdykt2', lbl: 'Werdykt (Poz)', cls: 'text-left', tip: 'K_W2' }},
+    {{ k: 'Status_EO', lbl: 'Status EO', cls: 'text-left', tip: 'K_EO' }},
     {{ k: 'm1', lbl: rollingGWs[0] || 'Mecz 1', isFix: true }},
-    {{ k: 'xgc1', lbl: 'GC Rywala (H/A)' }},
+    {{ k: 'xgc1', lbl: 'GC Rywala (H/A)', tip: 'K_GC_OPP' }},
     {{ k: 'm2', lbl: rollingGWs[1] || 'Mecz 2', isFix: true }},
   ];
   if (showTech) cols.push({{ k: 'xgc2', lbl: 'xGC 2' }});
@@ -1285,18 +1579,18 @@ function renderKokpit() {{
   if (showTech) cols.push({{ k: 'xgc6', lbl: 'xGC 6' }});
 
   cols.push(
-    {{ k: 'EV_6GW', lbl: 'EV 6GW' }},
+    {{ k: 'EV_6GW', lbl: 'EV 6GW', tip: 'K_EV_6GW' }},
     {{ k: 'Radar', lbl: 'Radar', cls: 'text-left' }},
     {{ k: 'Status_Min', lbl: 'Status minutowy', cls: 'text-left' }}
   );
   if (showTech) cols.push({{ k: 'Szyfr', lbl: 'Szyfr', cls: 'text-center' }});
-  cols.push({{ k: 'Scenariusz', lbl: `Przewidywany Scenariusz (${{rollingGWs[0]}})`, isScen: true }});
+  cols.push({{ k: 'Scenariusz', lbl: `Przewidywany Scenariusz (${{rollingGWs[0]}})`, isScen: true, tip: 'K_SCEN' }});
   if (showTech) cols.push({{ k: 'Booster', lbl: 'Booster' }});
 
   let html = '<thead><tr><th>#</th>' + cols.map(c => {{
     const sticky = c.k === 'Zawodnik' ? 'sticky-col' : '';
     const extraTh = c.thCls || '';
-    return `<th class="${{sticky}} ${{extraTh}}" onclick="sortKokpit('${{c.k}}')">${{c.lbl}} ${{kSort.col===c.k ? (kSort.asc?'▲':'▼') : ''}}</th>`;
+    return `<th class="${{sticky}} ${{extraTh}}" onclick="sortKokpit('${{c.k}}')">${{c.lbl}}${{tipIcon(c.tip)}} ${{kSort.col===c.k ? (kSort.asc?'▲':'▼') : ''}}</th>`;
   }}).join('') + '</tr></thead><tbody>';
 
   rows.forEach((r, idx) => {{
@@ -1323,6 +1617,9 @@ function renderKokpit() {{
 }}
 function sortKokpit(c) {{ kSort = {{ col: c, asc: kSort.col === c ? !kSort.asc : false }}; renderKokpit(); }}
 
+// ============================================================================
+// 5. SKANER WILDCARD I FREE HIT
+// ============================================================================
 function verdClass(v) {{
   if (v.includes('💣')) return 'verd-bomb';
   if (v.includes('✅')) return 'verd-ok';
@@ -1332,7 +1629,15 @@ function verdClass(v) {{
 function renderScanner() {{
   const scope = document.getElementById('sScope').value;
   const rows = scope === 'FUTURE' ? dataScanner.filter(r => r.GW >= nextGwNum) : dataScanner;
-  let html = '<thead><tr><th>GW</th><th>Data</th><th>Skaner Free Hit</th><th>Werdykt Free Hit</th><th>Skaner Wildcard (5 GW)</th><th>Werdykt Wildcard</th><th>Top 5 klubów w tej kolejce</th></tr></thead><tbody>';
+  let html = `<thead><tr>
+    <th>GW</th>
+    <th>Data</th>
+    <th>Skaner Free Hit${{tipIcon('S_FH_SC')}}</th>
+    <th>Werdykt Free Hit${{tipIcon('S_FH_VR')}}</th>
+    <th>Skaner Wildcard (5 GW)${{tipIcon('S_WC_SC')}}</th>
+    <th>Werdykt Wildcard${{tipIcon('S_WC_VR')}}</th>
+    <th>Top 5 klubów w tej kolejce</th>
+  </tr></thead><tbody>`;
   rows.forEach(r => {{
     const hi = r.GW === nextGwNum ? 'gw-highlight' : '';
     html += `<tr class="${{hi}}">
@@ -1361,6 +1666,9 @@ function renderScanner() {{
   document.getElementById('tbl-chips').innerHTML = cHtml + '</tbody>';
 }}
 
+// ============================================================================
+// 6. PLANER
+// ============================================================================
 function sortSquadByPosition() {{
   const indexed = planerState.squad.map((row, i) => {{
     const pInfo = findExactPlayer(row.player);
@@ -1545,7 +1853,7 @@ document.addEventListener('scroll', (e) => {{
 function getPosFixture(teamShort, pos, gw) {{
   const fx = (teamFixShort[teamShort] || {{}})[String(gw)];
   if (!fx) return {{ text: '—', fdr: 0 }};
-  const fdr = (pos === 'MID' || pos === 'FWD') ? fx.fdr_bw : fx.fdr_bx;
+  const fdr = (pos === 'MID' || pos === 'FWD') ? fx.fdr_atk : fx.fdr_def;
   return {{ text: fx.text, fdr: fdr }};
 }}
 
@@ -1641,7 +1949,7 @@ function importPlaner() {{
   }} catch (e) {{ alert("❌ Błąd parsowania JSON: " + e.message); }}
 }}
 function resetPlaner() {{
-  if (!confirm("Przywrócić domyślny skład i cele z pliku V7?")) return;
+  if (!confirm("Przywrócić domyślny skład i cele?")) return;
   planerState = {{
     squad: JSON.parse(JSON.stringify(defaultSquad)),
     targets: JSON.parse(JSON.stringify(defaultTargets)),
@@ -1748,14 +2056,16 @@ function renderPlanerMainTable() {{
   </span>`;
 
   let html = `<thead><tr>
-    <th class="sticky-col">Zawodnik (wybór z listy)</th><th>Status</th><th>Klub</th><th>Poz</th><th>Cena</th>`;
+    <th class="sticky-col">Zawodnik (wybór z listy)</th>
+    <th>Status${{tipIcon('PLR_STATUS')}}</th>
+    <th>Klub</th><th>Poz</th><th>Cena</th>`;
   planerGWs.forEach(gw => {{
     const hi = gw === selectedLineupGw ? 'gw-now' : '';
     html += `<th class="${{hi}}" onclick="selectLineupGw(${{gw}})" title="Kliknij, aby zobaczyć przymiarkę na GW${{gw}}">GW${{gw}}</th>`;
   }});
-  html += `<th>Decyzja</th><th>OUT / IN</th><th>Akcje</th></tr></thead><tbody>`;
+  html += `<th>Decyzja${{tipIcon('PLR_DEC')}}</th><th>OUT / IN${{tipIcon('PLR_OUTIN')}}</th><th>Akcje</th></tr></thead><tbody>`;
 
-  html += `<tr class="sec-divider-row"><td colspan="${{totalCols}}">👕 TWÓJ SKŁAD (podzielony na strefy pozycji jak w Excelu) ${{pillsHtml}}</td></tr>`;
+  html += `<tr class="sec-divider-row"><td colspan="${{totalCols}}">👕 TWÓJ SKŁAD (podzielony na strefy pozycji) ${{pillsHtml}}</td></tr>`;
   html += buildPlanerRowsHtml('squad');
 
   html += `<tr class="sec-divider-row"><td colspan="${{totalCols}}">🎯 CELE TRANSFEROWE — IN (kliknij ⬆️, aby przenieść gracza prosto do jego strefy pozycji wyżej)</td></tr>`;
