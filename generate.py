@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 import numpy as np
 import json
+import math
 import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -45,6 +46,11 @@ def norm_txt(s):
     s = unicodedata.normalize('NFD', s)
     return ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn')
 
+def safe_num_col(df, col, default=0.0):
+    if col in df.columns:
+        return pd.to_numeric(df[col], errors='coerce').fillna(default)
+    return pd.Series(default, index=df.index, dtype=float)
+
 updated_at = datetime.now(ZoneInfo("Europe/Warsaw")).strftime("%Y-%m-%d %H:%M")
 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -74,7 +80,7 @@ else:
     next_gw_num = min(int(curr_ev['id'].iloc[0]) + 1, 38) if not curr_ev.empty else 1
 
 # ==============================================================================
-# POBIERANIE FORMY Z OSTATNICH 5 ZAKOŃCZONYCH KOLEJEK
+# POBIERANIE FORMY Z OSTATNICH 5 ZAKOŃCZONYCH KOLEJEK (L5)
 # ==============================================================================
 finished_gw_ids = sorted(events_df[events_df['finished'] == True]['id'].astype(int).tolist())
 l5_gws = finished_gw_ids[-5:] if finished_gw_ids else []
@@ -98,7 +104,7 @@ for gw_id in l5_gws:
         print(f"Ostrzeżenie: nie udało się pobrać kolejki GW{gw_id} dla L5 ({e})")
 
 # ==============================================================================
-# 1. TABELA PIŁKARZY
+# 1. TABELA PIŁKARZY (z DefCon, Saves, Bonus, BPS, Kartkami, Statusami i SFG)
 # ==============================================================================
 df_p = pd.DataFrame()
 df_p['id'] = elements_df['id'].astype(int)
@@ -107,24 +113,66 @@ df_p['web_name'] = elements_df['web_name'].astype(str).str.strip()
 df_p['team'] = elements_df['team'].map(id_to_team)
 df_p['team_short'] = elements_df['team'].map(id_to_short)
 df_p['team_id'] = elements_df['team'].astype(int)
-df_p['apps'] = elements_df['starts'].astype(int) if 'starts' in elements_df.columns else 0
-df_p['min'] = elements_df['minutes'].astype(int)
-df_p['G'] = elements_df['goals_scored'].astype(int)
-df_p['A'] = elements_df['assists'].astype(int)
-df_p['xG'] = elements_df['expected_goals'].astype(float)
+df_p['apps'] = safe_num_col(elements_df, 'starts', 0).astype(int)
+df_p['min'] = safe_num_col(elements_df, 'minutes', 0).astype(int)
+df_p['G'] = safe_num_col(elements_df, 'goals_scored', 0).astype(int)
+df_p['A'] = safe_num_col(elements_df, 'assists', 0).astype(int)
+df_p['xG'] = safe_num_col(elements_df, 'expected_goals', 0.0)
 df_p['NPxG'] = df_p['xG']
-df_p['xA'] = elements_df['expected_assists'].astype(float)
+df_p['xA'] = safe_num_col(elements_df, 'expected_assists', 0.0)
 df_p['xGChain'] = (
-    elements_df['expected_goal_involvements'].astype(float)
+    safe_num_col(elements_df, 'expected_goal_involvements', 0.0)
     if 'expected_goal_involvements' in elements_df.columns
     else (df_p['xG'] + df_p['xA'])
 )
 df_p['xG90'] = np.where(df_p['min'] > 0, (df_p['xG'] / df_p['min']) * 90.0, 0.0)
 df_p['xA90'] = np.where(df_p['min'] > 0, (df_p['xA'] / df_p['min']) * 90.0, 0.0)
 df_p['Pozycja'] = elements_df['element_type'].map(pos_map)
-df_p['Posiadanie'] = elements_df['selected_by_percent'].astype(float) / 100.0
-df_p['Cena'] = elements_df['now_cost'].astype(float) / 10.0
+df_p['Posiadanie'] = safe_num_col(elements_df, 'selected_by_percent', 0.0) / 100.0
+df_p['Cena'] = safe_num_col(elements_df, 'now_cost', 0.0) / 10.0
 
+# Nowe kolumny analityczne z FPL API (DefCon, Obrony, Bonus, BPS, Kartki)
+if 'defensive_contribution' in elements_df.columns:
+    df_p['DefCon'] = safe_num_col(elements_df, 'defensive_contribution', 0).astype(int)
+else:
+    cbi = safe_num_col(elements_df, 'clearances_blocks_interceptions', 0)
+    tck = safe_num_col(elements_df, 'tackles', 0)
+    rec = safe_num_col(elements_df, 'recoveries', 0)
+    df_p['DefCon'] = np.where(df_p['Pozycja'] == 'DEF', cbi + tck, cbi + tck + rec).astype(int)
+
+df_p['DefCon90'] = np.where(df_p['min'] > 0, (df_p['DefCon'] / df_p['min']) * 90.0, 0.0)
+df_p['Obrony'] = safe_num_col(elements_df, 'saves', 0).astype(int)
+df_p['Saves90'] = np.where(df_p['min'] > 0, (df_p['Obrony'] / df_p['min']) * 90.0, 0.0)
+df_p['Bonus'] = safe_num_col(elements_df, 'bonus', 0).astype(int)
+df_p['BPS'] = safe_num_col(elements_df, 'bps', 0).astype(int)
+df_p['Bonus90'] = np.where(df_p['min'] > 0, (df_p['Bonus'] / df_p['min']) * 90.0, 0.0)
+df_p['BPS90'] = np.where(df_p['min'] > 0, (df_p['BPS'] / df_p['min']) * 90.0, 0.0)
+df_p['ZK'] = safe_num_col(elements_df, 'yellow_cards', 0).astype(int)
+df_p['CzK'] = safe_num_col(elements_df, 'red_cards', 0).astype(int)
+
+# Flagi dostępności / kontuzji oraz stałe fragmenty gry
+df_p['status'] = elements_df['status'].fillna('a').astype(str) if 'status' in elements_df.columns else 'a'
+df_p['news'] = elements_df['news'].fillna('').astype(str) if 'news' in elements_df.columns else ''
+
+def calc_chance(row):
+    raw = row.get('chance_of_playing_next_round', None)
+    st = str(row.get('status', 'a') or 'a')
+    if pd.notna(raw):
+        return int(float(raw))
+    if st == 'a':
+        return 100
+    if st in ('i', 's', 'u', 'n'):
+        return 0
+    return 50
+
+df_p['chance'] = elements_df.apply(calc_chance, axis=1).astype(int)
+pen_ord = safe_num_col(elements_df, 'penalties_order', 0)
+cor_ord = safe_num_col(elements_df, 'corners_and_indirect_freekicks_order', 0)
+dfk_ord = safe_num_col(elements_df, 'direct_freekicks_order', 0)
+df_p['is_pen'] = (pen_ord == 1).astype(int)
+df_p['is_setp'] = ((cor_ord == 1) | (dfk_ord == 1)).astype(int)
+
+# Statystyki z ostatnich 5 kolejek (L5)
 df_p['min_l5'] = df_p['id'].map(lambda i: l5_stats.get(int(i), {}).get('min', 0)).astype(int)
 df_p['xg_l5'] = df_p['id'].map(lambda i: l5_stats.get(int(i), {}).get('xg', 0.0)).astype(float)
 df_p['xa_l5'] = df_p['id'].map(lambda i: l5_stats.get(int(i), {}).get('xa', 0.0)).astype(float)
@@ -132,7 +180,7 @@ df_p['xa_l5'] = df_p['id'].map(lambda i: l5_stats.get(int(i), {}).get('xa', 0.0)
 df_players = df_p[df_p['min'] > 0].copy()
 max_price_slider = round(max(16.0, float(df_p['Cena'].max()) + 1.0), 1)
 
-df_all_catalog = df_p[['player', 'web_name', 'team', 'team_short', 'Pozycja', 'Cena']].copy()
+df_all_catalog = df_p[['player', 'web_name', 'team', 'team_short', 'Pozycja', 'Cena', 'status', 'chance', 'news']].copy()
 df_all_catalog['Cena'] = df_all_catalog['Cena'].round(1)
 
 catalog_norm_map = {norm_txt(row['player']): row['player'] for _, row in df_all_catalog.iterrows()}
@@ -162,9 +210,9 @@ finished_fix = fixtures_df[
 ].copy()
 
 xg_by_team = df_p.groupby('team_id')['xG'].sum().to_dict()
-gkp_df = elements_df[(elements_df['element_type'] == 1) & (elements_df['minutes'] > 0)].copy()
-gkp_df['xgc_f'] = gkp_df['expected_goals_conceded'].astype(float)
-gkp_df['min_f'] = gkp_df['minutes'].astype(float)
+gkp_df = elements_df[(elements_df['element_type'] == 1) & (safe_num_col(elements_df, 'minutes', 0) > 0)].copy()
+gkp_df['xgc_f'] = safe_num_col(gkp_df, 'expected_goals_conceded', 0.0)
+gkp_df['min_f'] = safe_num_col(gkp_df, 'minutes', 0.0)
 gkp_agg = gkp_df.groupby('team').agg({'xgc_f': 'sum', 'min_f': 'sum'})
 gkp_xgc90_map = np.where(gkp_agg['min_f'] > 0, (gkp_agg['xgc_f'] / gkp_agg['min_f']) * 90.0, 1.4)
 team_id_to_xga90 = dict(zip(gkp_agg.index, gkp_xgc90_map))
@@ -216,6 +264,7 @@ df_clubs = pd.DataFrame(clubs_rows).sort_values(
 
 m_denom = df_clubs['matches'].replace(0, 1).astype(float)
 med_npxgc90 = float(np.median(df_clubs['NPxGA'] / m_denom))
+med_xg90 = float(np.median(df_clubs['xG'] / m_denom))
 med_ppda = float(np.median(df_clubs['PPDA']))
 
 def calc_takt_xgc90(r):
@@ -366,41 +415,255 @@ for _, t_row in teams_df.sort_values('name').iterrows():
 
     fdr_matrix.append(row_fdr)
     chip_matrix.append(row_chip)
+# ==============================================================================
+# 4. SILNIK EXPECTED POINTS (xPts — 8 SKŁADNIKÓW) + KOKPIT + PLANER 12GW
+# ==============================================================================
+print("4/5 Przeliczanie silnika xPts (8 składników), Kokpitu i Skanera...")
 
-# ==============================================================================
-# 4. KOKPIT
-# ==============================================================================
-print("4/5 Przeliczanie Kokpitu i Skanera...")
+def poisson_tail(k_min, lam):
+    if lam <= 0.0:
+        return 0.0
+    cdf = 0.0
+    term = math.exp(-lam)
+    for k in range(k_min):
+        if k > 0:
+            term *= lam / k
+        cdf += term
+    return max(0.0, min(1.0, 1.0 - cdf))
+
+def expected_gc_penalty(lam):
+    if lam <= 0.0:
+        return 0.0
+    ev = 0.0
+    term = math.exp(-lam)
+    for k in range(1, 15):
+        term *= lam / k
+        if k >= 2:
+            ev += (k // 2) * term
+    return ev
+
+def expected_saves_pts(lam):
+    if lam <= 0.0:
+        return 0.0
+    ev = 0.0
+    term = math.exp(-lam)
+    for k in range(1, 22):
+        term *= lam / k
+        if k >= 3:
+            ev += (k // 3) * term
+    return ev
+
+def mins_to_probs(xm):
+    if xm <= 0.5:
+        return 0.0, 0.0
+    p_play = min(0.99, xm / 20.0) if xm < 20.0 else min(0.99, 0.85 + 0.14 * min(1.0, (xm - 20.0) / 55.0))
+    p_60 = 1.0 / (1.0 + math.exp(-(xm - 56.0) / 8.5))
+    if xm < 15.0:
+        p_60 *= (xm / 15.0)
+    p_60 = min(p_play, max(0.0, p_60))
+    return p_play, p_60
+
+# Średnie pozycyjne (priory do stabilizacji graczy z małą próbką minut)
+default_priors = {
+    'GKP': {'xg': 0.00, 'xa': 0.01, 'dc': 0.0, 'sv': 3.0, 'bon': 0.30, 'yc': 0.05, 'rc': 0.005},
+    'DEF': {'xg': 0.06, 'xa': 0.07, 'dc': 7.5, 'sv': 0.0, 'bon': 0.25, 'yc': 0.18, 'rc': 0.010},
+    'MID': {'xg': 0.22, 'xa': 0.16, 'dc': 6.5, 'sv': 0.0, 'bon': 0.28, 'yc': 0.18, 'rc': 0.008},
+    'FWD': {'xg': 0.42, 'xa': 0.12, 'dc': 3.5, 'sv': 0.0, 'bon': 0.35, 'yc': 0.12, 'rc': 0.008},
+}
+pos_priors = {}
+for pz in ['GKP', 'DEF', 'MID', 'FWD']:
+    sub = df_p[(df_p['Pozycja'] == pz) & (df_p['min'] >= 270)]
+    if len(sub) >= 5:
+        m90 = sub['min'].sum() / 90.0
+        pos_priors[pz] = {
+            'xg': float(sub['xG'].sum() / m90),
+            'xa': float(sub['xA'].sum() / m90),
+            'dc': float(sub['DefCon'].sum() / m90),
+            'sv': float(sub['Obrony'].sum() / m90),
+            'bon': float(sub['Bonus'].sum() / m90),
+            'yc': float(sub['ZK'].sum() / m90),
+            'rc': float(sub['CzK'].sum() / m90),
+        }
+    else:
+        pos_priors[pz] = default_priors[pz]
+
+PRIOR_ATK = 270.0
+PRIOR_DC = 270.0
+PRIOR_BON = 360.0
+PRIOR_CRD = 450.0
+GOAL_PTS = {'GKP': 6.0, 'DEF': 6.0, 'MID': 5.0, 'FWD': 4.0}
 
 scenariusz_map = {
-    "MM": ("🚧 Elitarny Pressing (Ciężko o punkty, mało miejsca)", 0.85),
-    "MD": ("🎁 Samobójczy Pressing (Dziurawi. Autostrada na kontry!)", 1.25),
-    "DM": ("🧱 Elitarny Autobus (Szczelni. Bicie głową w mur)", 0.80),
-    "DD": ("🎪 Chłopcy do bicia (Słaby blok. Trening strzelecki)", 1.20)
+    "MM": ("🚧 Elitarny Pressing (Ciężko o punkty, mało miejsca)", 0.85, 0.90),
+    "MD": ("🎁 Samobójczy Pressing (Dziurawi. Autostrada na kontry!)", 1.25, 1.15),
+    "DM": ("🧱 Elitarny Autobus (Szczelni. Bicie głową w mur)", 0.80, 0.88),
+    "DD": ("🎪 Chłopcy do bicia (Słaby blok. Trening strzelecki)", 1.20, 1.12),
 }
 
-gw_weights_6 = [1.0, 0.85, 0.72, 0.61, 0.52, 0.44]
-gw_weights_sum = sum(gw_weights_6)
+def calc_match_xpts(poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, saves90_eff,
+                    bonus90_eff, yc90_eff, rc90_eff, xgc90_team, opp, ha, xpts_boost):
+    xm = x_mins_base * avail
+    if xm <= 0.1 or not opp:
+        return [0.0] * 9, 0.0, 0.0
+
+    p_play_raw, p_60_raw = mins_to_probs(x_mins_base)
+    p_play = p_play_raw * avail
+    p_60 = p_60_raw * avail
+    mf = xm / 90.0
+
+    # 1. Występ (1 pkt za grę + 1 pkt za >=60 min)
+    pts_app = p_play + p_60
+
+    # Parametry rywala
+    opp_xga90 = short_to_xga.get(opp, med_npxgc90) / short_to_matches.get(opp, 1.0)
+    opp_xg90 = short_to_xg.get(opp, med_xg90) / short_to_matches.get(opp, 1.0)
+    opp_xga_ha = opp_xga90 * (1.15 if ha == "H" else 0.85)
+    atk_mult = max(0.45, min(1.80, opp_xga_ha / max(med_npxgc90, 0.5)))
+
+    # 2. Gole i 3. Asysty
+    exp_g = xg90_eff * mf * atk_mult * xpts_boost
+    exp_a = xa90_eff * mf * atk_mult * xpts_boost
+    pts_g = exp_g * GOAL_PTS.get(poz, 4.0)
+    pts_a = exp_a * 3.0
+
+    # 4. Czyste konto (czysty Poisson) i 5. Kara za stracone gole (-1 za każde 2)
+    ha_def = 0.85 if ha == "H" else 1.15
+    lam_gc = max(0.25, ((xgc90_team + opp_xg90) / 2.0) * ha_def)
+    cs_prob = math.exp(-lam_gc)
+    cs_val = 4.0 if poz in ('GKP', 'DEF') else (1.0 if poz == 'MID' else 0.0)
+    pts_cs = cs_prob * p_60 * cs_val
+    pts_gc = -expected_gc_penalty(lam_gc) * mf if poz in ('GKP', 'DEF') else 0.0
+
+    # 6. DefCon (CBIT >=10 dla DEF, CBIRT >=12 dla MID/FWD -> +2 pkt)
+    if poz in ('DEF', 'MID', 'FWD'):
+        def_work_mult = max(0.85, min(1.15, ((opp_xg90 / max(med_xg90, 0.5)) ** 0.5) * (0.95 if ha == "H" else 1.05)))
+        lam_dc = defcon90_eff * mf * def_work_mult
+        pts_dc = poisson_tail(10 if poz == 'DEF' else 12, lam_dc) * 2.0
+    else:
+        pts_dc = 0.0
+
+    # 7. Obrony bramkarza (+1 pkt za każde 3 obrony)
+    if poz == 'GKP':
+        save_mult = max(0.75, min(1.35, (opp_xg90 / max(med_xg90, 0.5)) * (0.92 if ha == "H" else 1.08)))
+        pts_sv = expected_saves_pts(saves90_eff * mf * save_mult)
+    else:
+        pts_sv = 0.0
+
+    # 8. Bonus (hybryda: dorobek w meczu + historyczny magnes na bonusy) i Kartki
+    match_bon = (
+        exp_g * 0.85 + exp_a * 0.45 +
+        (cs_prob * p_60 * 0.45 if poz in ('GKP', 'DEF') else 0.0) +
+        pts_sv * 0.25 + pts_dc * 0.12
+    )
+    pts_bon = min(2.2 * avail, 0.55 * match_bon + 0.45 * (bonus90_eff * mf))
+    pts_crd = -(yc90_eff * 1.0 + rc90_eff * 3.0) * mf
+
+    brk = [pts_app, pts_g, pts_a, pts_cs, pts_gc, pts_dc, pts_sv, pts_bon, pts_crd]
+    return brk, cs_prob, opp_xga_ha
+
+def get_scenario_for_opp(opp):
+    if not opp:
+        return "", "Brak danych", 1.0, 1.0
+    ppda_o = short_to_ppda.get(opp, 0.0)
+    xga90_o = short_to_xga.get(opp, 0.0) / short_to_matches.get(opp, 1.0)
+    szyfr = ("D" if ppda_o > med_ppda else "M") + ("D" if xga90_o > med_npxgc90 else "M")
+    desc, old_b, xpts_b = scenariusz_map.get(szyfr, ("Brak danych", 1.0, 1.0))
+    return szyfr, desc, old_b, xpts_b
 
 kokpit_rows = []
-for _, p in df_players.iterrows():
-    minuty = float(p['min'])
-    min_l5 = float(p['min_l5'])
-    sr_min = minuty / max_matches
-    sr_min_l5 = min_l5 / l5_denom if l5_gws else 0.0
+planer_xpts_map = {}
 
-    if sr_min < 50.0 and sr_min_l5 < 50.0:
-        continue
-
+for _, p in df_p.iterrows():
     zaw = p['player']
     klub = p['team']
     poz = p['Pozycja']
-    posiadanie = float(p['Posiadanie'])
-    cena = float(p['Cena'])
+    if poz not in pos_priors:
+        continue
 
-    xgi90 = ((p['NPxG'] + p['xA']) / minuty * 90.0) if minuty > 0 else 0.0
+    minuty = float(p['min'])
+    min_l5 = float(p['min_l5'])
+    club_m = max(float(team_to_matches.get(klub, 1.0)), 1.0)
+    sr_min = min(90.0, minuty / club_m)
+    sr_min_l5 = min(90.0, min_l5 / l5_denom) if l5_gws else sr_min
+
+    status_p = str(p['status'])
+    chance_p = int(p['chance'])
+    news_p = str(p['news'])
+
+    # Oczekiwane bazowe minuty (40% sezon + 60% L5)
+    if status_p == 'u':
+        x_mins_base = 0.0
+    elif l5_gws:
+        x_mins_base = min(90.0, max(0.0, 0.40 * sr_min + 0.60 * sr_min_l5))
+    else:
+        x_mins_base = sr_min
+
+    # Stabilizowane wskaźniki (shrinkage + miks 70/30 sezon/L5 dla ataku)
+    pr = pos_priors[poz]
+    xg90_stab = (float(p['xG']) + pr['xg'] * (PRIOR_ATK / 90.0)) / ((minuty + PRIOR_ATK) / 90.0)
+    xa90_stab = (float(p['xA']) + pr['xa'] * (PRIOR_ATK / 90.0)) / ((minuty + PRIOR_ATK) / 90.0)
     xg_l5 = float(p['xg_l5'])
     xa_l5 = float(p['xa_l5'])
+    if l5_gws and min_l5 > 0:
+        w_l5 = 0.30 * min(1.0, min_l5 / 180.0)
+        xg90_eff = (1.0 - w_l5) * xg90_stab + w_l5 * ((xg_l5 / min_l5) * 90.0)
+        xa90_eff = (1.0 - w_l5) * xa90_stab + w_l5 * ((xa_l5 / min_l5) * 90.0)
+    else:
+        xg90_eff, xa90_eff = xg90_stab, xa90_stab
+
+    defcon90_eff = (float(p['DefCon']) + pr['dc'] * (PRIOR_DC / 90.0)) / ((minuty + PRIOR_DC) / 90.0)
+    saves90_eff = (float(p['Obrony']) + pr['sv'] * (PRIOR_DC / 90.0)) / ((minuty + PRIOR_DC) / 90.0)
+    bonus90_eff = (float(p['Bonus']) + pr['bon'] * (PRIOR_BON / 90.0)) / ((minuty + PRIOR_BON) / 90.0)
+    yc90_eff = (float(p['ZK']) + pr['yc'] * (PRIOR_CRD / 90.0)) / ((minuty + PRIOR_CRD) / 90.0)
+    rc90_eff = (float(p['CzK']) + pr['rc'] * (PRIOR_CRD / 90.0)) / ((minuty + PRIOR_CRD) / 90.0)
+
+    xgc90_team = team_to_xga.get(klub, med_npxgc90) / club_m
+
+    # Oblicz prognozę xPts dla wszystkich 12 kolejek Planera (w tym 6 pierwszych dla Kokpitu)
+    gw_xpts_dict = {}
+    gw_details = {}
+    for gw_num in planer_gws:
+        fx = team_fixtures.get(klub, {}).get(gw_num, {'text': '', 'opp': '', 'ha': '', 'fdr_atk': 0, 'fdr_def': 0, 'matches': []})
+        is_gw1 = (gw_num == next_gw_num)
+        avail = (chance_p / 100.0) if is_gw1 else (0.0 if status_p == 'u' else 1.0)
+
+        tot_brk = [0.0] * 9
+        cs_list = []
+        xgc_sum = 0.0
+        if fx['matches']:
+            for o, h in fx['matches']:
+                _, _, _, xpts_b = get_scenario_for_opp(o) if is_gw1 else ("", "", 1.0, 1.0)
+                m_brk, m_cs, m_xgc = calc_match_xpts(
+                    poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, saves90_eff,
+                    bonus90_eff, yc90_eff, rc90_eff, xgc90_team, o, h, xpts_b if is_gw1 else 1.0
+                )
+                for k_i in range(9):
+                    tot_brk[k_i] += m_brk[k_i]
+                cs_list.append(m_cs)
+                xgc_sum += m_xgc
+
+        gw_tot = sum(tot_brk)
+        cs_gw = (1.0 - float(np.prod([1.0 - c for c in cs_list]))) if cs_list else 0.0
+        brk_round = [round(v, 2) for v in tot_brk]
+        gw_xpts_dict[str(gw_num)] = {'t': round(gw_tot, 2), 'b': brk_round}
+        gw_details[gw_num] = {
+            'fx': fx, 'tot': gw_tot, 'brk': brk_round, 'cs': cs_gw, 'xgc': xgc_sum
+        }
+
+    xpts_6gw_sum = sum(gw_details[g]['tot'] for g in rolling_gws if g in gw_details)
+    planer_xpts_map[zaw] = {
+        'x6': round(xpts_6gw_sum, 2),
+        'xm': int(round(x_mins_base)),
+        'gws': gw_xpts_dict
+    }
+
+    # Filtr wejściowy do Kokpitu (>=50 min średnio w sezonie LUB w ostatnich 5 GW)
+    if minuty <= 0 or (sr_min < 50.0 and sr_min_l5 < 50.0):
+        continue
+
+    posiadanie = float(p['Posiadanie'])
+    cena = float(p['Cena'])
+    xgi90 = ((float(p['NPxG']) + float(p['xA'])) / minuty * 90.0) if minuty > 0 else 0.0
     xgi90_l5 = ((xg_l5 + xa_l5) / min_l5 * 90.0) if min_l5 > 0 else 0.0
 
     if not l5_gws or min_l5 < 90.0:
@@ -413,17 +676,12 @@ for _, p in df_players.iterrows():
         else:
             trend_code, trend_icon = "STABLE", "➡️"
     else:
-        if xgi90_l5 >= 0.10:
-            trend_code, trend_icon = "UP", "📈"
-        else:
-            trend_code, trend_icon = "STABLE", "➡️"
-
-    xgc90_team = team_to_xga.get(klub, 0.0) / team_to_matches.get(klub, 1.0)
+        trend_code, trend_icon = ("UP", "📈") if xgi90_l5 >= 0.10 else ("STABLE", "➡️")
 
     if poz == "FWD": w1 = "🔥 Elita" if xgi90 >= 0.6 else ("✅ Grywalny" if xgi90 >= 0.4 else "❌ Odrzuć")
     elif poz == "MID": w1 = "🔥 Elita" if xgi90 >= 0.5 else ("✅ Grywalny" if xgi90 >= 0.3 else "❌ Odrzuć")
     elif poz == "DEF": w1 = "🔥 Elita" if xgi90 >= 0.25 else ("✅ Grywalny" if xgi90 >= 0.1 else "❌ Odrzuć")
-    else: w1 = "Brak pozycji"
+    else: w1 = "🧤 Bramkarz"
 
     ocena_obr = "Brak Danych" if xgc90_team == 0 else ("🛡️ Mur (xGC < 1.30)" if xgc90_team <= 1.3 else "⚠️ Dziurawi")
 
@@ -433,78 +691,28 @@ for _, p in df_players.iterrows():
 
     status_eo = "🗡️ Super Diff (Miecz)" if posiadanie < 0.10 else "🛡️ Szablon (Tarcza)"
 
-    m_list, xgc_list, ev_cs_list, cs_prob_list = [], [], [], []
+    m_list = []
+    xpts_6_list = []
     for gw_num in rolling_gws:
-        fx = team_fixtures.get(klub, {}).get(gw_num, {'text': '', 'opp': '', 'ha': '', 'fdr_atk': 0, 'fdr_def': 0, 'matches': []})
-        if fx['matches']:
-            xgc_v = sum(
-                (short_to_xga.get(o, 0.0) / short_to_matches.get(o, 1.0)) * (1.15 if h == "H" else 0.85)
-                for o, h in fx['matches']
-            )
-            cs_matches = []
-            for o, h in fx['matches']:
-                opp_xg90 = short_to_xg.get(o, xgc90_team) / short_to_matches.get(o, 1.0)
-                ha_def_mod = 0.85 if h == "H" else 1.15
-                opp_xg_ha = opp_xg90 * ha_def_mod
-                lam_m = ((xgc90_team + opp_xg90) / 2.0) * ha_def_mod
-                bonus_cs = 1.15 if (xgc90_team < 1.5 and opp_xg_ha < 1.5) else 1.0
-                cs_m = min(1.0, float(np.exp(-lam_m) * bonus_cs))
-                cs_matches.append(cs_m)
-            cs_prob_gw = 1.0 - float(np.prod([1.0 - c for c in cs_matches]))
-            ev_cs_gw = float(sum(cs_matches) * 4.0)
-            fdr_pos = fx['fdr_atk'] if poz in ["MID", "FWD"] else fx['fdr_def']
-        else:
-            xgc_v, cs_prob_gw, ev_cs_gw, fdr_pos = 0.0, 0.0, 0.0, 0
-
-        m_list.append({'text': fx['text'], 'opp': fx['opp'], 'ha': fx['ha'], 'xgc': round(xgc_v, 2), 'fdr': fdr_pos})
-        xgc_list.append(xgc_v)
-        cs_prob_list.append(cs_prob_gw)
-        ev_cs_list.append(ev_cs_gw)
+        gd = gw_details[gw_num]
+        fx = gd['fx']
+        fdr_pos = (fx['fdr_atk'] if poz in ["MID", "FWD"] else fx['fdr_def']) if fx['matches'] else 0
+        m_list.append({
+            'text': fx['text'], 'opp': fx['opp'], 'ha': fx['ha'],
+            'xgc': round(gd['xgc'], 2), 'fdr': fdr_pos, 'xp': round(gd['tot'], 2)
+        })
+        xpts_6_list.append({'gw': f"GW{gw_num}", 'xp': round(gd['tot'], 2), 'fx': fx['text'] or 'BLANK'})
 
     while len(m_list) < 6:
-        m_list.append({'text': '', 'opp': '', 'ha': '', 'xgc': 0.0, 'fdr': 0})
-        xgc_list.append(0.0)
-        cs_prob_list.append(0.0)
-        ev_cs_list.append(0.0)
+        m_list.append({'text': '', 'opp': '', 'ha': '', 'xgc': 0.0, 'fdr': 0, 'xp': 0.0})
 
-    opp1, ha1, q_xgc1 = m_list[0]['opp'], m_list[0]['ha'], xgc_list[0]
+    opp1 = m_list[0]['opp']
+    szyfr, scenariusz, _, xpts_boost1 = get_scenario_for_opp(opp1)
 
-    ppda_opp1 = short_to_ppda.get(opp1, 0.0)
-    xga90_opp1 = short_to_xga.get(opp1, 0.0) / short_to_matches.get(opp1, 1.0)
-    szyfr = ("D" if ppda_opp1 > med_ppda else "M") + ("D" if xga90_opp1 > med_npxgc90 else "M")
-    scenariusz, booster_val = scenariusz_map.get(szyfr, ("Brak danych", 1.0))
-
-    szansa_cs = cs_prob_list[0]
-
-    if q_xgc1 == 0 and ev_cs_list[0] == 0:
-        ev_gw = 0.0
-    elif poz in ["DEF", "GKP"]:
-        ev_gw = ev_cs_list[0]
-    elif poz == "MID":
-        ev_gw = xgi90 * (q_xgc1 / 1.5) * 4.0 * booster_val
-    elif poz == "FWD":
-        ev_gw = xgi90 * (q_xgc1 / 1.5) * 3.5 * booster_val
-    else:
-        ev_gw = 0.0
-
-    if sum(xgc_list) == 0 and sum(ev_cs_list) == 0:
-        ev_6gw = 0.0
-    else:
-        w_avg = sum(xgc_list[i] * gw_weights_6[i] for i in range(6)) / gw_weights_sum
-        if poz in ["DEF", "GKP"]:
-            ev_6gw = sum(ev_cs_list[i] * gw_weights_6[i] for i in range(6)) / gw_weights_sum
-        elif poz == "MID":
-            ev_6gw = xgi90 * (w_avg / 1.5) * 4.0
-        elif poz == "FWD":
-            ev_6gw = xgi90 * (w_avg / 1.5) * 3.5
-        else:
-            ev_6gw = 0.0
-
-    if ev_6gw == 0: radar = "Brak Danych"
-    elif poz == "FWD": radar = "🛒 Priorytet Kupna" if ev_6gw >= 2.1 else ("✅ Dobra Opcja" if ev_6gw >= 1.4 else "❌ Pozbądź się")
-    elif poz == "MID": radar = "🛒 Priorytet Kupna" if ev_6gw >= 2.0 else ("✅ Dobra Opcja" if ev_6gw >= 1.2 else "❌ Pozbądź się")
-    elif poz in ["DEF", "GKP"]: radar = "🛒 Priorytet Kupna" if ev_6gw >= 1.4 else ("✅ Dobra Opcja" if ev_6gw >= 0.8 else "❌ Pozbądź się")
-    else: radar = "Brak pozycji"
+    gd1 = gw_details.get(rolling_gws[0], {'tot': 0.0, 'brk': [0.0]*9, 'cs': 0.0}) if rolling_gws else {'tot': 0.0, 'brk': [0.0]*9, 'cs': 0.0}
+    brk1 = gd1['brk']
+    xpts_gw1 = round(gd1['tot'], 2)
+    szansa_cs = gd1['cs']
 
     if l5_gws and sr_min >= 50.0 and sr_min_l5 < 35.0:
         status_min = "⚠️ Spadek minut (L5)"
@@ -515,18 +723,56 @@ for _, p in df_players.iterrows():
 
     kokpit_rows.append({
         'Zawodnik': zaw, 'Klub': klub, 'Cena': round(cena, 1), 'Minuty': int(minuty),
+        'xMins': int(round(x_mins_base)),
         'xGI90': round(xgi90, 2),
+        'DefCon90': round(float(p['DefCon90']), 1),
         'Min_L5': int(min_l5), 'xG_L5': round(xg_l5, 2), 'xGI90_L5': round(xgi90_l5, 2),
         'Trend_Code': trend_code, 'Trend_Icon': trend_icon,
         'xGC90_Team': round(xgc90_team, 2), 'Werdykt1': w1,
-        'Ocena_Obrony': ocena_obr, 'Szansa_CS': round(szansa_cs * 100, 1), 'EV_GW': round(ev_gw, 2),
+        'Ocena_Obrony': ocena_obr, 'Szansa_CS': round(szansa_cs * 100, 1),
+        'xPts_GW': xpts_gw1, 'xPts_GW_Brk': brk1,
+        'xPts_Atk1': round(brk1[1] + brk1[2], 2),
+        'xPts_Def1': round(brk1[3] + brk1[4] + brk1[6], 2),
+        'xPts_DC1': round(brk1[5], 2),
+        'xPts_Bon1': round(brk1[7] + brk1[8], 2),
         'Pozycja': poz, 'Posiadanie': round(posiadanie * 100, 1), 'Werdykt2': w2, 'Status_EO': status_eo,
         'm1': m_list[0], 'm2': m_list[1], 'm3': m_list[2], 'm4': m_list[3], 'm5': m_list[4], 'm6': m_list[5],
-        'EV_6GW': round(ev_6gw, 2), 'Radar': radar, 'Status_Min': status_min,
-        'Szyfr': szyfr, 'Scenariusz': scenariusz, 'Booster': booster_val
+        'xPts_6GW': round(xpts_6gw_sum, 2), 'xPts_6_List': xpts_6_list,
+        'xPts_Val': round(xpts_6gw_sum / max(cena, 3.5), 2),
+        'Radar': '', 'Status_Min': status_min,
+        'Szyfr': szyfr, 'Scenariusz': scenariusz, 'Booster': xpts_boost1,
+        'status': status_p, 'chance': chance_p, 'news': news_p,
+        'is_pen': int(p['is_pen']), 'is_setp': int(p['is_setp'])
     })
 
-kokpit_rows.sort(key=lambda x: x['EV_6GW'], reverse=True)
+# Dynamiczna kalibracja progów Radaru osobno dla każdej pozycji (top 20% = Priorytet, środek = Dobra, dół 35% = Pozbądź się)
+radar_floors = {
+    'GKP': (20.0, 16.0), 'DEF': (22.0, 17.0), 'MID': (26.0, 19.0), 'FWD': (26.0, 19.0)
+}
+radar_cuts = {}
+for pz in ['GKP', 'DEF', 'MID', 'FWD']:
+    vals = [r['xPts_6GW'] for r in kokpit_rows if r['Pozycja'] == pz and r['xPts_6GW'] > 0]
+    f_hi, f_lo = radar_floors[pz]
+    if len(vals) >= 6:
+        p80 = max(f_hi, float(np.percentile(vals, 80)))
+        p35 = max(f_lo, float(np.percentile(vals, 35)))
+    else:
+        p80, p35 = f_hi, f_lo
+    radar_cuts[pz] = (round(p80, 1), round(p35, 1))
+
+for r in kokpit_rows:
+    v6 = r['xPts_6GW']
+    hi_cut, lo_cut = radar_cuts.get(r['Pozycja'], (25.0, 18.0))
+    if v6 <= 0:
+        r['Radar'] = "Brak Danych"
+    elif v6 >= hi_cut:
+        r['Radar'] = "🛒 Priorytet Kupna"
+    elif v6 >= lo_cut:
+        r['Radar'] = "✅ Dobra Opcja"
+    else:
+        r['Radar'] = "❌ Pozbądź się"
+
+kokpit_rows.sort(key=lambda x: x['xPts_6GW'], reverse=True)
 
 # ==============================================================================
 # 5. SKANER WILDCARD I FREE HIT (filtr WC: min. 3/5 kolejek >= MEDIANA)
@@ -574,7 +820,7 @@ for i in range(38):
     })
 
 # ==============================================================================
-# 6. DOMYŚLNY STAN PLANERA
+# 6. DOMYŚLNY STAN PLANERA I SERIALIZACJA DANYCH DO JSON
 # ==============================================================================
 default_planer_squad = [
     {"player": resolve_official_name("Caoimhin Kelleher"), "status": "", "outGw": ""},
@@ -607,10 +853,15 @@ df_pl_out = df_clubs[pl_cols].copy()
 for c in ['xG', 'NPxG', 'xGA', 'NPxGA', 'PPDA', 'OPPDA', 'Taktyczne xGC90', 'xGD']:
     df_pl_out[c] = df_pl_out[c].round(2)
 
-players_cols = ['player', 'team', 'apps', 'min', 'G', 'A', 'xG', 'NPxG', 'xA', 'xGChain', 'xG90', 'xA90', 'Pozycja', 'Posiadanie', 'Cena']
+players_cols = [
+    'player', 'team', 'Pozycja', 'Cena', 'status', 'chance', 'news',
+    'apps', 'min', 'G', 'A', 'xG', 'NPxG', 'xA', 'xGChain', 'xG90', 'xA90',
+    'DefCon', 'DefCon90', 'Obrony', 'Bonus', 'BPS90', 'ZK', 'Posiadanie'
+]
 df_players_out = df_players[players_cols].copy()
-for c in ['xG', 'NPxG', 'xA', 'xGChain', 'xG90', 'xA90']:
+for c in ['xG', 'NPxG', 'xA', 'xGChain', 'xG90', 'xA90', 'BPS90']:
     df_players_out[c] = df_players_out[c].round(2)
+df_players_out['DefCon90'] = df_players_out['DefCon90'].round(1)
 df_players_out['Cena'] = df_players_out['Cena'].round(1)
 
 json_pl = df_pl_out.to_json(orient='records')
@@ -620,6 +871,8 @@ json_fdr = json.dumps(fdr_matrix)
 json_team_fix_short = json.dumps(team_fixtures_short)
 json_gw_meta = json.dumps(gw_meta)
 json_kokpit = json.dumps(kokpit_rows)
+json_planer_xpts = json.dumps(planer_xpts_map)
+json_radar_cuts = json.dumps(radar_cuts)
 json_rolling_gws = json.dumps([f"GW{g}" for g in rolling_gws] + [""] * (6 - len(rolling_gws)))
 json_planer_gws = json.dumps(planer_gws)
 json_scanner = json.dumps(scanner_rows)
@@ -628,7 +881,6 @@ json_def_squad = json.dumps(default_planer_squad)
 json_def_targets = json.dumps(default_planer_targets)
 
 print("5/5 Budowanie pliku index.html...")
-
 html_app = f"""<!DOCTYPE html>
 <html lang="pl">
 <head>
@@ -675,13 +927,18 @@ html_app = f"""<!DOCTYPE html>
   #fplTooltip {{
     display: none; position: fixed; z-index: 20000;
     background: #1e293b; color: #f8fafc; padding: 10px 13px; border-radius: 7px;
-    font-size: 12.5px; line-height: 1.48; max-width: 340px; min-width: 190px;
-    box-shadow: 0 10px 26px rgba(0,0,0,0.32); border: 1px solid rgba(255,255,255,0.14);
+    font-size: 12.5px; line-height: 1.48; max-width: 350px; min-width: 200px;
+    box-shadow: 0 10px 26px rgba(0,0,0,0.34); border: 1px solid rgba(255,255,255,0.14);
     pointer-events: none; text-align: left; font-weight: 400; white-space: normal;
   }}
   #fplTooltip b {{ color: #86efac; font-weight: 700; }}
-  #fplTooltip .tip-title {{ font-weight: 700; color: #ffffff; margin-bottom: 4px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 3px; }}
+  #fplTooltip .tip-title {{ font-weight: 700; color: #ffffff; margin-bottom: 5px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.16); padding-bottom: 3px; }}
   #fplTooltip .tip-muted {{ color: #cbd5e1; font-size: 11.5px; display: block; margin-top: 5px; }}
+  .tip-grid {{ display: grid; grid-template-columns: 1fr auto; gap: 2px 14px; font-size: 12px; }}
+  .tip-val {{ font-weight: 700; text-align: right; color: #e2e8f0; }}
+  .tip-pos {{ color: #86efac; }}
+  .tip-neg {{ color: #fca5a5; }}
+  .tip-total {{ margin-top: 6px; padding-top: 5px; border-top: 1px solid rgba(255,255,255,0.18); display: flex; justify-content: space-between; font-weight: 700; font-size: 13px; color: #ffffff; }}
 
   .sheet-container {{ flex: 1; overflow: auto; background: white; }}
   .tab-view {{ display: none; width: 100%; height: 100%; flex-direction: column; }}
@@ -697,6 +954,7 @@ html_app = f"""<!DOCTYPE html>
   table.excel-table th:hover {{ background: #d6d6d6; }}
   table.excel-table th.gw-now {{ background: #107c41; color: white; }}
   table.excel-table th.l5-hdr {{ background: #d9ead3; color: #0f5132; border-bottom: 2px solid #107c41; }}
+  table.excel-table th.xpts-hdr {{ background: #d6eaf8; color: #0b4a7d; border-bottom: 2px solid #1b6ca8; }}
   table.excel-table td {{ border: 1px solid var(--excel-border); padding: 4px 7px; white-space: nowrap; text-align: right; }}
   table.excel-table td.text-left {{ text-align: left; font-weight: 500; }}
   table.excel-table td.text-center {{ text-align: center; }}
@@ -706,6 +964,29 @@ html_app = f"""<!DOCTYPE html>
     position: sticky; left: 0; z-index: 2; background: #f3f2f1;
   }}
   table.excel-table th.sticky-col {{ z-index: 4; background: #dcdcdc; }}
+
+  .xpts-cell {{
+    font-weight: 700; color: #0b4a7d; background-color: #eef6fc !important;
+    cursor: help; text-decoration: underline dotted rgba(11,74,125,0.45); text-underline-offset: 2px;
+  }}
+  .xpts-cell:hover {{ background-color: #d6eaf8 !important; }}
+  .dc-hi {{ background-color: #e3f5e8 !important; color: #0f5132 !important; font-weight: 700; }}
+
+  .st-dot {{
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px;
+    vertical-align: middle; cursor: help; flex-shrink: 0;
+  }}
+  .st-ok {{ background: #16a34a; }}
+  .st-75 {{ background: #eab308; box-shadow: 0 0 0 1px #a16207; }}
+  .st-50 {{ background: #f97316; box-shadow: 0 0 0 1px #c2410c; }}
+  .st-0  {{ background: #dc2626; box-shadow: 0 0 0 1px #991b1b; }}
+  .tag-icon {{ margin-left: 3px; font-size: 11.5px; cursor: help; }}
+  .btn-mini-in {{
+    margin-left: 5px; padding: 0 5px; font-size: 11px; font-weight: 700; line-height: 17px;
+    border: 1px solid #107c41; border-radius: 3px; background: #fff; color: #107c41;
+    cursor: pointer; vertical-align: middle;
+  }}
+  .btn-mini-in:hover {{ background: #107c41; color: #fff; }}
 
   .l5-col {{ background-color: #f4faf5; }}
   .trend-UP {{ background-color: #d4edda !important; color: #0f5132 !important; font-weight: 700; }}
@@ -720,6 +1001,12 @@ html_app = f"""<!DOCTYPE html>
   .fdr-4 {{ background-color: #FF0000 !important; color: #ffffff !important; font-weight: 700; text-align: center !important; }}
   .fdr-5 {{ background-color: #C00000 !important; color: #ffffff !important; font-weight: 700; text-align: center !important; }}
   .fdr-0 {{ background-color: #eeeeee !important; color: #777777 !important; text-align: center !important; }}
+
+  .xp-tier-5 {{ background-color: #009e49 !important; color: #ffffff !important; font-weight: 700; text-align: center !important; }}
+  .xp-tier-4 {{ background-color: #7cc943 !important; color: #111111 !important; font-weight: 700; text-align: center !important; }}
+  .xp-tier-3 {{ background-color: #fff066 !important; color: #111111 !important; font-weight: 700; text-align: center !important; }}
+  .xp-tier-2 {{ background-color: #f8b4b4 !important; color: #7f1d1d !important; font-weight: 700; text-align: center !important; }}
+  .xp-tier-0 {{ background-color: #eeeeee !important; color: #777777 !important; text-align: center !important; }}
 
   .scen-MD {{ background-color: #d4edda !important; color: #155724 !important; font-weight: 600; text-align: left !important; }}
   .scen-DD {{ background-color: #c3e6cb !important; color: #0f401b !important; font-weight: 600; text-align: left !important; }}
@@ -752,16 +1039,16 @@ html_app = f"""<!DOCTYPE html>
     border-bottom: 2px solid #107c41 !important;
   }}
 
-  tr.zone-GKP td:not(.cell-fix):not([class*="dec-"]) {{ background-color: #DAE3F3 !important; }}
-  tr.zone-DEF td:not(.cell-fix):not([class*="dec-"]) {{ background-color: #FBE5D6 !important; }}
-  tr.zone-MID td:not(.cell-fix):not([class*="dec-"]) {{ background-color: #EDEDED !important; }}
-  tr.zone-FWD td:not(.cell-fix):not([class*="dec-"]) {{ background-color: #FFF2CC !important; }}
-  tr.zone-NEW td:not(.cell-fix):not([class*="dec-"]) {{ background-color: #ffffff !important; }}
+  tr.zone-GKP td:not(.cell-fix):not([class*="dec-"]):not(.xpts-cell) {{ background-color: #DAE3F3 !important; }}
+  tr.zone-DEF td:not(.cell-fix):not([class*="dec-"]):not(.xpts-cell) {{ background-color: #FBE5D6 !important; }}
+  tr.zone-MID td:not(.cell-fix):not([class*="dec-"]):not(.xpts-cell) {{ background-color: #EDEDED !important; }}
+  tr.zone-FWD td:not(.cell-fix):not([class*="dec-"]):not(.xpts-cell) {{ background-color: #FFF2CC !important; }}
+  tr.zone-NEW td:not(.cell-fix):not([class*="dec-"]):not(.xpts-cell) {{ background-color: #ffffff !important; }}
 
-  tr.zone-GKP:hover td:not(.cell-fix):not([class*="dec-"]) {{ background-color: #c8d7f0 !important; }}
-  tr.zone-DEF:hover td:not(.cell-fix):not([class*="dec-"]) {{ background-color: #f8d4bc !important; }}
-  tr.zone-MID:hover td:not(.cell-fix):not([class*="dec-"]) {{ background-color: #dedede !important; }}
-  tr.zone-FWD:hover td:not(.cell-fix):not([class*="dec-"]) {{ background-color: #ffe8a3 !important; }}
+  tr.zone-GKP:hover td:not(.cell-fix):not([class*="dec-"]):not(.xpts-cell) {{ background-color: #c8d7f0 !important; }}
+  tr.zone-DEF:hover td:not(.cell-fix):not([class*="dec-"]):not(.xpts-cell) {{ background-color: #f8d4bc !important; }}
+  tr.zone-MID:hover td:not(.cell-fix):not([class*="dec-"]):not(.xpts-cell) {{ background-color: #dedede !important; }}
+  tr.zone-FWD:hover td:not(.cell-fix):not([class*="dec-"]):not(.xpts-cell) {{ background-color: #ffe8a3 !important; }}
 
   tr.zone-border-top td {{ border-top: 3px solid #1f2937 !important; }}
   tr.zone-border-bottom td {{ border-bottom: 3px solid #1f2937 !important; }}
@@ -792,7 +1079,7 @@ html_app = f"""<!DOCTYPE html>
   #playerDropdownMenu {{
     display: none; position: fixed; z-index: 9999; background: #ffffff;
     border: 1px solid #107c41; border-radius: 5px; box-shadow: 0 6px 18px rgba(0,0,0,0.18);
-    max-height: 250px; overflow-y: auto; width: 290px; font-size: 12.5px;
+    max-height: 250px; overflow-y: auto; width: 295px; font-size: 12.5px;
   }}
   .dd-item {{
     padding: 6px 10px; cursor: pointer; display: flex; justify-content: space-between;
@@ -817,6 +1104,10 @@ html_app = f"""<!DOCTYPE html>
     display: inline-block; font-size: 9.5px; font-weight: 700; padding: 1px 3px; border-radius: 3px;
     margin-left: 3px; background: rgba(0,0,0,0.75); color: #fff; vertical-align: middle;
   }}
+  .cap-badge {{
+    display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 4px; border-radius: 3px;
+    margin-left: 4px; background: #1e293b; color: #facc15; vertical-align: middle;
+  }}
   .dec-now {{ background: #ffd6d6 !important; color: #900 !important; font-weight: 700; text-align: left !important; }}
   .dec-soon {{ background: #fff0c2 !important; color: #7a4f00 !important; font-weight: 700; text-align: left !important; }}
   .dec-plan {{ background: #e8f1ff !important; color: #0b4a99 !important; font-weight: 600; text-align: left !important; }}
@@ -829,7 +1120,7 @@ html_app = f"""<!DOCTYPE html>
     font-size: 12px; font-weight: 600; color: #333;
   }}
   .gw-pill.active {{ background: var(--excel-green); color: white; border-color: var(--excel-green); }}
-  .lineup-tables-grid {{ display: grid; grid-template-columns: 1.25fr 1fr; gap: 14px; padding: 12px; align-items: start; }}
+  .lineup-tables-grid {{ display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; padding: 12px; align-items: start; }}
   @media (max-width: 960px) {{ .lineup-tables-grid {{ grid-template-columns: 1fr; }} }}
   .mini-tbl-box {{ border: 1px solid #d4d4d4; border-radius: 5px; overflow: hidden; background: white; }}
   .mini-tbl-hdr {{
@@ -841,9 +1132,11 @@ html_app = f"""<!DOCTYPE html>
   table.mini-table td {{ padding: 5px 7px; border: 1px solid #e0e0e0; text-align: center; white-space: nowrap; }}
   table.mini-table td.text-left {{ text-align: left; font-weight: 500; }}
 
-  .val-bar {{ display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 12px; background: #f3f6f4; border-top: 1px solid #e0e0e0; font-size: 12.5px; }}
+  .val-bar {{ display: flex; flex-wrap: wrap; gap: 14px; padding: 9px 12px; background: #f3f6f4; border-top: 1px solid #e0e0e0; font-size: 12.5px; align-items: center; }}
   .val-ok {{ color: #0f5132; font-weight: 700; }}
   .val-err {{ color: #b00020; font-weight: 700; }}
+  .val-xpts {{ background: #d6eaf8; color: #0b4a7d; padding: 3px 9px; border-radius: 4px; font-weight: 700; }}
+  .val-cap {{ background: #fef3c7; color: #92400e; padding: 3px 9px; border-radius: 4px; font-weight: 700; }}
 
   .bottom-tabs {{
     background: #e1dfdd; border-top: 1px solid #c8c6c4; display: flex; align-items: center;
@@ -952,7 +1245,13 @@ html_app = f"""<!DOCTYPE html>
         </select>
       </div>
       <div class="toolbar-group">
-        <label style="cursor:pointer;"><input type="checkbox" id="kShowTech" onchange="renderKokpit()"> Pokaż ukryte (xGC 2-6, Szyfr, Booster)</label>
+        <label style="cursor:pointer;"><input type="checkbox" id="kOnlyMine" onchange="renderKokpit()"> Tylko mój skład (👕)</label>
+      </div>
+      <div class="toolbar-group">
+        <label style="cursor:pointer;"><input type="checkbox" id="kHideInj" onchange="renderKokpit()"> Ukryj kontuzjowanych (0%)</label>
+      </div>
+      <div class="toolbar-group">
+        <label style="cursor:pointer;"><input type="checkbox" id="kShowTech" onchange="renderKokpit()"> Pokaż ukryte (składowe xPts, xGC 2-6, Szyfr)</label>
       </div>
       <div style="margin-left:auto; font-weight:700; color:#107c41;" id="kCount"></div>
     </div>
@@ -990,10 +1289,11 @@ html_app = f"""<!DOCTYPE html>
   <!-- 6. PLANER -->
   <div id="tab-planer" class="tab-view">
     <div class="toolbar">
-      <b>🗓️ Planer Składu (strefy GKP / DEF / MID / FWD z auto-sortowaniem)</b>
+      <b>🗓️ Planer Składu (strefy GKP / DEF / MID / FWD + silnik xPts)</b>
       <div class="toolbar-group">
         <button class="mode-btn active" id="pViewTxt" onclick="setPlanerCellMode('text', this)">Rywale (EVE-H)</button>
         <button class="mode-btn" id="pViewNum" onclick="setPlanerCellMode('num', this)">Trudność (1–5)</button>
+        <button class="mode-btn" id="pViewXp" onclick="setPlanerCellMode('xpts', this)">Prognoza (xPts)</button>
       </div>
       <div class="toolbar-group" style="margin-left:auto;">
         <button class="act-btn" onclick="exportPlaner()">💾 Eksportuj JSON</button>
@@ -1018,7 +1318,7 @@ html_app = f"""<!DOCTYPE html>
           <div class="planer-card-hdr">
             <span>⚽ TABELA 2: PRZYMIARKA SKŁADU NA WYBRANĄ KOLEJKĘ (Wyjściowa 11 i Ławka)</span>
             <div style="display:flex; gap:8px; align-items:center;">
-              <button class="act-btn" onclick="autoPickBenchForGw()" title="Automatycznie posadź na ławce 1 bramkarza i 3 graczy z najtrudniejszym meczem / statusem Słup">⚡ Auto-ławka (11+4)</button>
+              <button class="act-btn primary" onclick="autoPickBenchForGw()">⚡ Auto-ławka (xPts) <span class="info-icon" data-tip="PLR_AUTO" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></button>
               <span id="lineupGwInfo" style="font-weight:600; font-size:12.5px;"></span>
             </div>
           </div>
@@ -1058,6 +1358,8 @@ const dataFDR = {json_fdr};
 const teamFixShort = {json_team_fix_short};
 const gwMeta = {json_gw_meta};
 const dataKokpit = {json_kokpit};
+const planerXptsMap = {json_planer_xpts};
+const radarCuts = {json_radar_cuts};
 const rollingGWs = {json_rolling_gws};
 const planerGWs = {json_planer_gws};
 const dataScanner = {json_scanner};
@@ -1067,16 +1369,16 @@ const defaultSquad = {json_def_squad};
 const defaultTargets = {json_def_targets};
 
 // ============================================================================
-// SYSTEM DYMKÓW (TOOLTIPÓW) ⓘ — komputer (hover) + telefon (tap)
+// SYSTEM DYMKÓW (TOOLTIPÓW) ⓘ ORAZ PARAGONÓW xPts
 // ============================================================================
 const TIPS = {{
   TOP_L5: {{
     title: 'Okno formy (L5)',
-    body: 'Ostatnie 5 zakończonych kolejek, na bazie których liczone są kolumny formy L5 i strzałki trendu w Kokpicie.'
+    body: 'Ostatnie 5 zakończonych kolejek. Silnik xPts łączy sezon z L5 w proporcji <b>70/30</b> dla ataku (xG/xA) oraz <b>40/60</b> dla przewidywanych minut (xMins).'
   }},
   TOP_XGC: {{
     title: 'Ligowa mediana xGC/90',
-    body: 'Środkowa wartość oczekiwanych bramek traconych na mecz w Premier League (punkt odniesienia dla FDR i Scenariuszy meczowych).'
+    body: 'Środkowa wartość oczekiwanych bramek traconych na mecz w Premier League — punkt odniesienia dla silnika xPts, FDR i Scenariuszy.'
   }},
   TOP_PPDA: {{
     title: 'Ligowa mediana PPDA',
@@ -1084,155 +1386,71 @@ const TIPS = {{
   }},
 
   // Zakładka 1: Tabela Premier League
-  PL_XG: {{
-    title: 'xG (Expected Goals)',
-    body: 'Oczekiwane bramki zdobyte. Suma jakości wszystkich oddanych strzałów drużyny — pokazuje, ile goli powinna była strzelić.'
-  }},
-  PL_NPXG: {{
-    title: 'NPxG (Non-Penalty xG)',
-    body: 'Oczekiwane bramki bez rzutów karnych — lepiej oddaje siłę ataku z gry.<span class="tip-muted">Uwaga: podczas przerwy Understatu tymczasowo równe xG.</span>'
-  }},
-  PL_XGA: {{
-    title: 'xGA (Expected Goals Against)',
-    body: 'Oczekiwane bramki stracone. Suma jakości strzałów dopuszczonych przez obronę — im niższa wartość, tym szczelniejsza defensywa.'
-  }},
-  PL_NPXGA: {{
-    title: 'NPxGA (Non-Penalty xGA)',
-    body: 'Oczekiwane bramki stracone bez rzutów karnych.<span class="tip-muted">Uwaga: podczas przerwy Understatu tymczasowo równe xGA.</span>'
-  }},
-  PL_PPDA: {{
-    title: 'PPDA (Intensywność pressingu)',
-    body: 'Liczba podań, na jakie zespół pozwala rywalowi na jego połowie, zanim spróbuje odebrać piłkę. <b>Im niższa wartość, tym agresywniejszy pressing</b> (poniżej 10 = elita pressingu, powyżej 14 = cofnięty blok).<span class="tip-muted">Tymczasowo zamrożone po GW8 do powrotu Understatu.</span>'
-  }},
-  PL_OPPDA: {{
-    title: 'OPPDA (Odporność na pressing)',
-    body: 'Odwrotność PPDA — średnia liczba podań, jaką drużyna wymienia na własnej połowie, zanim przeciwnik zaatakuje ją pressingiem. <b>Im wyższa wartość</b>, tym łatwiej zespół rozgrywa piłkę (albo rywale celowo cofają się przeciwko niemu głęboko w obronę).'
-  }},
-  PL_TAKT: {{
-    title: 'Taktyczne xGC90',
-    body: 'Skorygowane zagrożenie defensywne na mecz (<b>xGA / mecze × mnożnik stylu</b>). Zwykłe xGA nie mówi, jak drużyna broni, więc algorytm nakłada korektę za styl pressingu:<br>• ostry pressing (PPDA &lt; 11) i szczelna obrona (&lt; 1.2) → <b>×0.85</b> (duszą rywala)<br>• ostry pressing (PPDA &lt; 11), dziurawa obrona (≥ 1.2) → <b>×1.20</b> (samobójczy pressing, autostrada na kontry)<br>• głęboki blok (PPDA &gt; 14) i szczelna obrona (&lt; 1.2) → <b>×0.90</b> (szczelny autobus)<br>• głęboki blok (PPDA &gt; 14) i słaba obrona (≥ 1.2) → <b>×1.05</b> (pasywni i dziurawi).<br><b>Im niższa liczba, tym trudniej strzelić temu zespołowi gola.</b>'
-  }},
-  PL_XGD: {{
-    title: 'xGD (Różnica xG na mecz)',
-    body: 'Średnia różnica oczekiwanych bramek na mecz: <b>(NPxG − NPxGA) / mecze</b>. Pokazuje realną siłę netto drużyny niezależnie od szczęścia w wykończeniu. Wartość <b>dodatnia (+)</b> oznacza przewagę jakościową; <b>ujemna (−)</b> — że zespół częściej jest zdominowany.'
-  }},
-  PL_FDR: {{
-    title: 'FDR (Wskaźnik trudności rywala)',
-    body: 'Własny wskaźnik trudności rywala (<b>1 = najłatwiejszy, 5 = najtrudniejszy</b>). Zamiast sztywnych ocen z FPL liczony jest na żywo z siły zespołu: <b>xGD</b> korygowane za pressing (+0.5 gdy zespół pressuje mocniej niż mediana ligi, lub −0.5 gdy jest bardzo pasywny przy PPDA &gt; 15). Wynik dzielony jest na progi 1–5 względem ligowej mediany straconego xG.'
-  }},
+  PL_XG: {{ title: 'xG (Expected Goals)', body: 'Oczekiwane bramki zdobyte. Suma jakości wszystkich oddanych strzałów drużyny.' }},
+  PL_NPXG: {{ title: 'NPxG (Non-Penalty xG)', body: 'Oczekiwane bramki bez rzutów karnych.<span class="tip-muted">Tymczasowo równe xG podczas przerwy Understatu.</span>' }},
+  PL_XGA: {{ title: 'xGA (Expected Goals Against)', body: 'Oczekiwane bramki stracone — im niższa wartość, tym szczelniejsza defensywa.' }},
+  PL_NPXGA: {{ title: 'NPxGA (Non-Penalty xGA)', body: 'Oczekiwane bramki stracone bez rzutów karnych.<span class="tip-muted">Tymczasowo równe xGA podczas przerwy Understatu.</span>' }},
+  PL_PPDA: {{ title: 'PPDA (Intensywność pressingu)', body: 'Liczba podań, na jakie zespół pozwala rywalowi na jego połowie, zanim spróbuje odebrać piłkę. <b>Im niższa wartość, tym agresywniejszy pressing.</b><span class="tip-muted">Tymczasowo zamrożone po GW8 do powrotu Understatu.</span>' }},
+  PL_OPPDA: {{ title: 'OPPDA (Odporność na pressing)', body: 'Średnia liczba podań, jaką drużyna wymienia na własnej połowie przed atakiem rywala. <b>Im wyższa wartość</b>, tym łatwiej zespół rozgrywa piłkę.' }},
+  PL_TAKT: {{ title: 'Taktyczne xGC90', body: 'Skorygowane zagrożenie defensywne na mecz (<b>xGA / mecze × mnożnik stylu</b>):<br>• ostry pressing (&lt;11) + szczelna obrona (&lt;1.2) → <b>×0.85</b><br>• ostry pressing (&lt;11) + dziurawa obrona (≥1.2) → <b>×1.20</b><br>• głęboki blok (&gt;14) + szczelna obrona (&lt;1.2) → <b>×0.90</b><br>• głęboki blok (&gt;14) + słaba obrona (≥1.2) → <b>×1.05</b>.' }},
+  PL_XGD: {{ title: 'xGD (Różnica xG na mecz)', body: 'Średnia różnica oczekiwanych bramek na mecz: <b>(NPxG − NPxGA) / mecze</b>. Pokazuje realną siłę netto drużyny.' }},
+  PL_FDR: {{ title: 'FDR (Wskaźnik trudności rywala)', body: 'Własny wskaźnik trudności rywala (<b>1 = najłatwiejszy, 5 = najtrudniejszy</b>) liczony na żywo z xGD i pressingu (PPDA).' }},
 
   // Zakładka 2: Tabela Piłkarzy
-  P_XGCHAIN: {{
-    title: 'xGChain',
-    body: 'Całkowity udział w akcjach bramkowych (wskaźnik podglądowy do oceny potencjału ofensywnego — nie wchodzi do wzorów EV). Docelowo oznacza sumę xG każdej akcji, w której piłkarz dotknął piłki, nawet 2–3 podania przed strzałem.<span class="tip-muted">Tymczasowo, podczas przerwy Understatu, kolumna pokazuje oficjalne xGI z FPL (xG + xA).</span>'
-  }},
+  P_STATUS: {{ title: 'Status dostępności (FPL API)', body: 'Aktualna flaga zdrowia/zawieszenia z oficjalnego FPL API: 🟢 100%, 🟡 75%, 🟠 50%/25%, 🔴 0%. Najedź na kropkę, aby przeczytać komunikat.' }},
+  P_XGCHAIN: {{ title: 'xGChain', body: 'Wskaźnik podglądowy udziału w akcjach bramkowych.<span class="tip-muted">Tymczasowo pokazuje oficjalne xGI z FPL (xG + xA) do powrotu Understatu.</span>' }},
+  P_DEFCON: {{ title: 'DefCon (Defensive Contributions)', body: 'Akcje defensywne punktowane w FPL (+2 pkt za mecz): dla <b>DEF</b> próg to <b>≥10</b> (wybicia, bloki, przechwyty, odbiory), a dla <b>MID/FWD</b> próg to <b>≥12</b> (wraz z odzyskaniami piłki).' }},
+  P_SAVES: {{ title: 'Obrony (Saves)', body: 'Łączna liczba interwencji bramkarza w sezonie (+1 pkt w FPL za każde 3 obrony w meczu).' }},
+  P_BONUS: {{ title: 'Bonus i BPS/90', body: 'Punkty bonusowe (1–3 pkt dla top 3 zawodników meczu wg systemu BPS) oraz średnia liczba punktów BPS na 90 minut.' }},
 
   // Zakładka 3: FDR
-  FDR_ALL: {{
-    title: 'FDR Ogólny',
-    body: 'Ogólna trudność rywala wyliczona na podstawie jego bilansu jakości (xGD) i intensywności pressingu (PPDA). <b>Im wyższa liczba (1–5), tym trudniejszy dla Ciebie mecz</b> (na wyjeździe +1, maks. 5).'
-  }},
-  FDR_ATK: {{
-    title: 'Trudność dla Ataku (MID / FWD)',
-    body: 'Trudność meczu dla Twoich graczy ofensywnych wyliczona na podstawie szczelności obrony rywala (NPxGA na mecz). <b>Im wyższa liczba (1–5), tym trudniejszy mecz dla Twojego ataku</b> (na wyjeździe +1, maks. 5).'
-  }},
-  FDR_DEF: {{
-    title: 'Trudność dla Obrony (DEF / GKP)',
-    body: 'Trudność meczu dla Twoich obrońców i bramkarzy wyliczona na podstawie siły ataku rywala (NPxG na mecz). <b>Im wyższa liczba (1–5), tym trudniejszy mecz o czyste konto</b> (na wyjeździe +1, maks. 5).'
-  }},
+  FDR_ALL: {{ title: 'FDR Ogólny', body: 'Ogólna trudność rywala wyliczona z xGD i PPDA. <b>Im wyższa liczba (1–5), tym trudniejszy mecz</b> (na wyjeździe +1, maks. 5).' }},
+  FDR_ATK: {{ title: 'Trudność dla Ataku (MID / FWD)', body: 'Trudność meczu dla Twoich graczy ofensywnych na podstawie szczelności obrony rywala (NPxGA/mecz). <b>Im wyższa (1–5), tym trudniej o punkty w ataku.</b>' }},
+  FDR_DEF: {{ title: 'Trudność dla Obrony (DEF / GKP)', body: 'Trudność meczu dla Twoich obrońców i bramkarzy na podstawie siły ataku rywala (NPxG/mecz). <b>Im wyższa (1–5), tym trudniej o czyste konto.</b>' }},
 
   // Zakładka 4: Kokpit
-  K_XGI90: {{
-    title: 'xGI90 (Sezon)',
-    body: 'Oczekiwany udział przy golach (<b>NPxG + xA</b>) w przeliczeniu na pełne 90 minut za cały sezon. Pokazuje bazowy potencjał ofensywny piłkarza.'
-  }},
-  K_MIN_L5: {{
-    title: 'Min L5 (Minuty z 5 GW)',
-    body: 'Suma minut z ostatnich 5 zakończonych kolejek (maks. 450). Żółte tło (<b>&lt; 175 min</b>) ostrzega przed rotacją, kontuzją lub utratą miejsca w składzie.'
-  }},
-  K_XG_L5: {{
-    title: 'xG L5 (Forma strzelecka)',
-    body: 'Suma oczekiwanych bramek (xG) z ostatnich 5 kolejek — pokazuje, czy gracz w ostatnim czasie regularnie dochodzi do sytuacji bramkowych.'
-  }},
-  K_XGI90_L5: {{
-    title: 'xGI90 L5 (Trend formy)',
-    body: 'Aktualna forma ofensywna na 90 minut z ostatnich 5 kolejek porównana ze średnią z całego sezonu:<br>📈 <b>zwyżka formy</b> (co najmniej +20% vs sezon)<br>➡️ <b>forma stabilna</b><br>📉 <b>spadek formy</b> (co najmniej −20% vs sezon)<br>⏸️ <b>za mało minut</b> do oceny (&lt; 90 min w L5).'
-  }},
-  K_XGC_TEAM: {{
-    title: 'xGC/90 Drużyny',
-    body: 'Ogólne xGC całej drużyny w przeliczeniu na jeden mecz. <b>Im niższa wartość, tym szczelniejsza defensywa zespołu.</b>'
-  }},
-  K_W1: {{
-    title: 'Werdykt ofensywy',
-    body: 'Ocena czysto ofensywna oparta na <b>xGI90</b> (liczona również dla obrońców — pomaga wyłapać groźnych wahadłowych i stoperów przy stałych fragmentach).'
-  }},
-  K_OBR: {{
-    title: 'Ocena obrony',
-    body: 'Szybka ocena defensywy zespołu na podstawie xGC/90 drużyny: <b>🛡️ Mur</b> przy xGC/90 ≤ 1.30, powyżej <b>⚠️ Dziurawi</b>.'
-  }},
-  K_CS: {{
-    title: 'Szansa na CS (Czyste konto)',
-    body: 'Prawdopodobieństwo czystego konta w najbliższej kolejce z <b>rozkładu Poissona</b>. Łączy xGC/90 Twojej drużyny z siłą ataku rywala (xG/90), koryguje za boisko (×0.85 u siebie / ×1.15 na wyjeździe) i dodaje +15% bonusu, gdy oba wskaźniki są poniżej 1.5.'
-  }},
-  K_EV_GW: {{
-    title: 'EV GW (Predykcja na najbliższą kolejkę)',
-    body: 'Prognoza <b>punktów dodatkowych</b> na najbliższą kolejkę (<b>nie zawiera</b> standardowych 2 pkt za występ, bonusów BPS ani obron bramkarza).<br>• <b>MID / FWD:</b> xGI90 × (GC Rywala H/A ÷ 1.5) × mnożnik pozycji (4.0 / 3.5) × Booster scenariusza<br>• <b>DEF / GKP:</b> Szansa na CS × 4 pkt.'
-  }},
-  K_W2: {{
-    title: 'Werdykt (Poz)',
-    body: 'Werdykt ogólny dostosowany do pozycji zawodnika: dla <b>DEF / GKP</b> ocenia szczelność obrony drużyny (xGC/90), a dla <b>MID / FWD</b> produkcję ofensywną (xGI90).'
-  }},
-  K_EO: {{
-    title: 'Status EO (Posiadanie)',
-    body: 'Rola zawodnika względem reszty graczy FPL:<br>• <b>🗡️ Super Diff (Miecz)</b> — poniżej 10% posiadania (pozwala gonić w tabeli)<br>• <b>🛡️ Szablon (Tarcza)</b> — od 10% w górę (chroni Twoją pozycję).'
-  }},
-  K_GC_OPP: {{
-    title: 'GC Rywala (H/A)',
-    body: 'Oczekiwane bramki tracone na mecz przez najbliższego rywala, <b>już skorygowane o mnożnik boiska</b>: ×1.15 gdy grasz u siebie (H) lub ×0.85 na wyjeździe (A).<span class="tip-muted">Korekta za styl pressingu (Booster) wchodzi osobno dopiero w EV GW, żeby nie mnożyć jej podwójnie.</span>'
-  }},
-  K_EV_6GW: {{
-    title: 'EV 6GW (Predykcja na 6 kolejek)',
-    body: 'Średnia ważona prognoza punktów dodatkowych na <b>6 najbliższych kolejek</b> (bliższe mecze ważą więcej niż odległe; bez 2 pkt za występ i bonusów). Dla <b>MID / FWD</b> bazuje na obronach 6 rywali (z korektą H/A), a dla <b>DEF / GKP</b> na szansach czystego konta w tych 6 meczach.'
-  }},
-  K_SCEN: {{
-    title: 'Przewidywany Scenariusz',
-    body: 'Taktyczny profil najbliższego rywala wyznaczony z porównania jego pressingu (<b>PPDA</b>) i obrony (<b>xGA/90</b>) z medianą ligi. Nakłada mnożnik (<b>Booster</b>) do EV GW dla ataku:<br>• 🎁 Samobójczy Pressing → <b>×1.25</b><br>• 🎪 Chłopcy do bicia → <b>×1.20</b><br>• 🚧 Elitarny Pressing → <b>×0.85</b><br>• 🧱 Elitarny Autobus → <b>×0.80</b>.'
-  }},
+  K_XMINS: {{ title: 'xMins (Przewidywane minuty)', body: 'Oczekiwana liczba minut na mecz wyliczona z sezonu (<b>40%</b>) i ostatnich 5 kolejek (<b>60%</b>). Służy do wyliczenia szans na 1 pkt za grę, 2 pkt za ≥60 min oraz skalowania statystyk.' }},
+  K_XGI90: {{ title: 'xGI90 (Sezon)', body: 'Oczekiwany udział przy golach (<b>xG + xA</b>) na 90 minut za cały sezon.' }},
+  K_DEFCON90: {{ title: 'DefCon/90', body: 'Średnia akcji defensywnych na 90 minut. Zielone podświetlenie oznacza graczy regularnie dobijających do progu <b>+2 pkt</b> (<b>≥10</b> dla DEF, <b>≥12</b> dla MID/FWD).' }},
+  K_MIN_L5: {{ title: 'Min L5 (Minuty z 5 GW)', body: 'Suma minut z ostatnich 5 kolejek (maks. 450). Żółte tło (<b>&lt; 175 min</b>) ostrzega przed rotacją lub urazem.' }},
+  K_XG_L5: {{ title: 'xG L5 (Forma strzelecka)', body: 'Suma oczekiwanych bramek (xG) z ostatnich 5 kolejek.' }},
+  K_XGI90_L5: {{ title: 'xGI90 L5 (Trend formy)', body: 'Aktualna forma ofensywna na 90 minut z L5 w porównaniu z sezonem: 📈 zwyżka (≥+20%), ➡️ stabilna, 📉 spadek (≤−20%), ⏸️ za mało minut (&lt;90m).' }},
+  K_XGC_TEAM: {{ title: 'xGC/90 Drużyny', body: 'Średnie oczekiwane bramki tracone przez całą drużynę na mecz. Im niżej, tym szczelniejsza defensywa.' }},
+  K_W1: {{ title: 'Werdykt (Atak)', body: 'Ocena czysto ofensywna na bazie xGI90 (pomaga wyłapać również ofensywnych obrońców).' }},
+  K_OBR: {{ title: 'Ocena obrony', body: '🛡️ Mur przy xGC/90 ≤ 1.30, powyżej ⚠️ Dziurawi.' }},
+  K_CS: {{ title: 'Szansa na CS (Poisson)', body: 'Prawdopodobieństwo czystego konta w najbliższej kolejce z czystego rozkładu Poissona (xGA/90 klubu + xG/90 rywala z korektą dom/wyjazd).' }},
+  K_XPTS_GW: {{ title: 'xPts GW (Pełna prognoza na najbliższą kolejkę)', body: 'Kompletna prognoza punktów FPL obejmująca <b>8 składników</b>: Występ (xMins + flaga kontuzji), Gole, Asysty, CS (także +1 dla MID), kary za 2+ stracone gole, <b>DefCon</b> (Poisson), <b>Obrony</b> (GKP), <b>Bonus</b> i Kartki.<span class="tip-muted">Najedź na dowolną liczbę w tej kolumnie, aby zobaczyć pełny paragon punktowy!</span>' }},
+  K_W2: {{ title: 'Werdykt (Poz)', body: 'Szybka ocena dopasowana do pozycji: dla DEF/GKP patrzy na obronę zespołu, dla MID/FWD na xGI90.' }},
+  K_EO: {{ title: 'Status EO (Posiadanie)', body: '🗡️ Super Diff (poniżej 10% posiadania) vs 🛡️ Szablon (od 10% w górę).' }},
+  K_GC_OPP: {{ title: 'GC Rywala (H/A)', body: 'Oczekiwane bramki tracone na mecz przez najbliższego rywala, <b>już skorygowane o boisko</b> (×1.15 u siebie, ×0.85 na wyjeździe).' }},
+  K_XPTS_6GW: {{ title: 'xPts 6GW (Suma punktów za 6 kolejek)', body: 'Realna <b>suma przewidywanych punktów FPL</b> w najbliższych 6 kolejkach (uwzględnia DGW i BLANKI; flaga kontuzji tnie tylko najbliższą GW, żeby jednomeczowe zawieszenie nie usuwało gracza z radaru).<span class="tip-muted">Najedź na liczbę, aby zobaczyć rozbicie po każdej kolejce!</span>' }},
+  K_XPTS_VAL: {{ title: 'xPts/£ (Wartość za milion)', body: 'Stosunek <b>xPts 6GW ÷ Cena</b>. Pozwala błyskawicznie znaleźć najlepsze tanie opcje (np. obrońców za £4.5m z wysokim DefCon).' }},
+  K_RADAR: {{ title: 'Radar (Dynamiczne progi)', body: 'Klasyfikacja oparta na realnym rozkładzie <b>xPts 6GW</b> osobno w ramach każdej pozycji: top 20% = 🛒 Priorytet Kupna, środek = ✅ Dobra Opcja, dół 35% = ❌ Pozbądź się.' }},
+  K_SCEN: {{ title: 'Przewidywany Scenariusz (GW+1)', body: 'Profil taktyczny najbliższego rywala (PPDA i xGA/90 vs mediana ligi). Nakłada delikatny mnożnik do ataku w GW+1: 🎁 Samobójczy Pressing (×1.15), 🎪 Chłopcy do bicia (×1.12), 🚧 Elitarny Pressing (×0.90), 🧱 Elitarny Autobus (×0.88).' }},
 
-  // Zakładka 5: Skaner Wildcard i Free Hit
-  S_FH_SC: {{
-    title: 'Skaner Free Hit (Wynik 1 GW)',
-    body: 'Suma siły ofensywnej <b>5 najlepszych klubów</b> w tej kolejce (z Tabeli Chipów niżej). Im wyższa wartość, tym lepsze mecze mają faworyci.'
-  }},
-  S_FH_VR: {{
-    title: 'Werdykt Free Hit',
-    body: 'Ocena opłacalności chipu Free Hit w tej jednej kolejce. <b>💣 WYBUCHOWA</b> zapala się po przekroczeniu progu statystycznego (średnia + odchylenie standardowe).'
-  }},
-  S_WC_SC: {{
-    title: 'Skaner Wildcard (Średnia 5 GW)',
-    body: 'Średni wynik z <b>5 kolejnych kolejek</b> (od tej kolejki włącznie). Pokazuje łączną jakość kalendarza na dłuższe okno.'
-  }},
-  S_WC_VR: {{
-    title: 'Werdykt Wildcard',
-    body: '<b>💣 ODPALAJ WILDCARD!</b> wymaga spełnienia dwóch warunków: średnia 5-kolejkowa powyżej progu (średnia + SD) <b>oraz</b> min. 3 z 5 kolejek co najmniej na poziomie ligowej mediany.'
-  }},
+  // Zakładka 5: Skaner
+  S_FH_SC: {{ title: 'Skaner Free Hit (Wynik 1 GW)', body: 'Suma siły ofensywnej 5 najlepszych klubów w tej kolejce (z Tabeli Chipów niżej).' }},
+  S_FH_VR: {{ title: 'Werdykt Free Hit', body: '💣 WYBUCHOWA zapala się powyżej progu statystycznego (średnia + odchylenie standardowe).' }},
+  S_WC_SC: {{ title: 'Skaner Wildcard (Średnia 5 GW)', body: 'Średni wynik z 5 kolejnych kolejek (od tej kolejki włącznie).' }},
+  S_WC_VR: {{ title: 'Werdykt Wildcard', body: '💣 ODPALAJ WILDCARD! wymaga średniej 5 GW powyżej progu oraz min. 3 z 5 kolejek ≥ mediana ligi.' }},
 
   // Zakładka 6: Planer
-  PLR_STATUS: {{
-    title: 'Status gracza w Planerze',
-    body: 'Określa, jak Planer traktuje piłkarza:<br>• <b>💎 Premium</b> — wyłączony z alarmu sprzedaży (trzymasz niezależnie od meczów)<br>• <b>🪵 Słup</b> — tani rezerwowy na ławkę (bez alarmu sprzedaży; priorytet przy Auto-ławce)<br>• <b>♻️ Rotacja</b> — zwykły gracz oceniany pod kątem terminarza.'
-  }},
-  PLR_DEC: {{
-    title: 'Decyzja (Alarm kalendarzowy)',
-    body: 'Automatycznie ostrzega, jeśli w ciągu najbliższych 12 kolejek gracz ma serię <b>3 trudnych meczów pod rząd</b> (trudność 4 lub 5 dopasowana do pozycji). Nie dotyczy graczy ze statusem 💎 Premium i 🪵 Słup.'
-  }},
-  PLR_OUTIN: {{
-    title: 'Kolumna OUT / IN',
-    body: 'Wpisz numer kolejki sprzedaży (<b>OUT</b>) w składzie albo zakupu (<b>IN</b>) w celach. Kafelki poza czasem gry w zespole wyszarzają się, a Tabela 2 na dole automatycznie składa aktualną kadrę na wybraną kolejkę.<span class="tip-muted">Wskazówka: kliknij dowolny kafelek meczu, aby posadzić gracza na ławce (Ł).</span>'
-  }}
+  PLR_STATUS: {{ title: 'Status gracza w Planerze', body: '💎 Premium (bez alarmu sprzedaży), 🪵 Słup (tani rezerwowy, priorytet na ławkę w Auto-ławce), ♻️ Rotacja (oceniany pod kątem terminarza).' }},
+  PLR_DEC: {{ title: 'Decyzja (Alarm kalendarzowy)', body: 'Ostrzega przed serią 3 trudnych meczów pod rząd (FDR 4 lub 5 dopasowany do pozycji) w oknie 12 GW.' }},
+  PLR_OUTIN: {{ title: 'Kolumna OUT / IN', body: 'Wpisz numer kolejki sprzedaży (OUT) lub zakupu (IN). Kliknięcie kafelka meczu sadza gracza na ławce (Ł).' }},
+  PLR_AUTO: {{ title: '⚡ Auto-ławka (po xPts)', body: 'Automatycznie wybiera optymalną wyjściową 11 na wybraną kolejkę pod <b>najwyższą sumę xPts</b> (z zachowaniem legalnej formacji FPL, sadzając najpierw graczy ze statusem 🪵 Słup i kontuzjowanych 0%).' }}
 }};
 
 let pinnedTipEl = null;
+
+function escHtml(s) {{
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}}
 
 function tipIcon(key) {{
   if (!key || !TIPS[key]) return '';
@@ -1263,13 +1481,17 @@ function positionTooltip(anchorEl) {{
   box.style.visibility = 'visible';
 }}
 
+function showHtmlTip(anchorEl, html) {{
+  const box = document.getElementById('fplTooltip');
+  box.innerHTML = html;
+  positionTooltip(anchorEl);
+}}
+
 function showTip(anchorEl) {{
   const key = anchorEl.getAttribute('data-tip');
   const data = TIPS[key];
   if (!data) return;
-  const box = document.getElementById('fplTooltip');
-  box.innerHTML = `<div class="tip-title">${{data.title}}</div><div>${{data.body}}</div>`;
-  positionTooltip(anchorEl);
+  showHtmlTip(anchorEl, `<div class="tip-title">${{data.title}}</div><div>${{data.body}}</div>`);
 }}
 
 function hideTip(force) {{
@@ -1279,23 +1501,84 @@ function hideTip(force) {{
 }}
 
 function toggleTip(anchorEl) {{
-  if (pinnedTipEl === anchorEl) {{
-    hideTip(true);
-  }} else {{
-    pinnedTipEl = anchorEl;
-    showTip(anchorEl);
-  }}
+  if (pinnedTipEl === anchorEl) {{ hideTip(true); }}
+  else {{ pinnedTipEl = anchorEl; showTip(anchorEl); }}
+}}
+
+function toggleHtmlTip(anchorEl, html) {{
+  if (pinnedTipEl === anchorEl) {{ hideTip(true); }}
+  else {{ pinnedTipEl = anchorEl; showHtmlTip(anchorEl, html); }}
+}}
+
+function showInlineTip(anchorEl) {{
+  const raw = anchorEl.getAttribute('data-tip-html');
+  if (raw) showHtmlTip(anchorEl, decodeURIComponent(raw));
+}}
+
+function toggleInlineTip(anchorEl) {{
+  const raw = anchorEl.getAttribute('data-tip-html');
+  if (raw) toggleHtmlTip(anchorEl, decodeURIComponent(raw));
 }}
 
 document.addEventListener('click', (e) => {{
-  if (pinnedTipEl && !e.target.classList.contains('info-icon')) hideTip(true);
+  if (pinnedTipEl && !e.target.closest('.info-icon,.xpts-cell,.st-dot,.tag-icon')) hideTip(true);
 }});
 window.addEventListener('resize', () => hideTip(true));
 document.addEventListener('scroll', () => hideTip(true), true);
 
+function statusDotHtml(status, chance, news) {{
+  let cls = 'st-ok', lbl = 'Dostępny (100%)';
+  if (status === 'u') {{ cls = 'st-0'; lbl = 'Niedostępny (poza kadrą)'; }}
+  else if (chance === 0) {{ cls = 'st-0'; lbl = 'Niedostępny / Kontuzja / Zawieszenie (0%)'; }}
+  else if (chance <= 50) {{ cls = 'st-50'; lbl = `Wątpliwy występ (${{chance}}%)`; }}
+  else if (chance < 100) {{ cls = 'st-75'; lbl = `Lekki znak zapytania (${{chance}}%)`; }}
+  const body = news ? `${{escHtml(lbl)}}<span class="tip-muted">${{escHtml(news)}}</span>` : escHtml(lbl);
+  const html = encodeURIComponent(`<div class="tip-title">Status FPL</div><div>${{body}}</div>`);
+  return `<span class="st-dot ${{cls}}" data-tip-html="${{html}}" onclick="event.stopPropagation(); toggleInlineTip(this)" onmouseenter="showInlineTip(this)" onmouseleave="hideTip()"></span>`;
+}}
+
+function buildXptsReceiptHtml(brk, title, total, extraNote) {{
+  const labels = [
+    ['Występ (xMins)', brk[0]],
+    ['Gole (xG)', brk[1]],
+    ['Asysty (xA)', brk[2]],
+    ['Czyste konto (CS)', brk[3]],
+    ['Stracone gole (−1/2g)', brk[4]],
+    ['DefCon (+2 pkt)', brk[5]],
+    ['Obrony (+1/3 obr.)', brk[6]],
+    ['Bonus (BPS)', brk[7]],
+    ['Kartki (ŻK / CzK)', brk[8]],
+  ];
+  let rows = '';
+  labels.forEach(([lbl, val]) => {{
+    if (Math.abs(val) < 0.005) return;
+    const vCls = val > 0 ? 'tip-pos' : 'tip-neg';
+    const sign = val > 0 ? '+' : '';
+    rows += `<div>${{lbl}}</div><div class="tip-val ${{vCls}}">${{sign}}${{val.toFixed(2)}}</div>`;
+  }});
+  if (!rows) rows = `<div>Brak punktów (BLANK / 0% szans)</div><div class="tip-val">0.00</div>`;
+  const noteHtml = extraNote ? `<span class="tip-muted">${{escHtml(extraNote)}}</span>` : '';
+  return `<div class="tip-title">${{escHtml(title)}}</div><div class="tip-grid">${{rows}}</div><div class="tip-total"><span>Razem xPts</span><span>${{Number(total).toFixed(2)}} pkt</span></div>${{noteHtml}}`;
+}}
+
+function buildXpts6Html(list, playerName, total) {{
+  let rows = '';
+  (list || []).forEach(it => {{
+    rows += `<div>${{escHtml(it.gw)}} (${{escHtml(it.fx)}})</div><div class="tip-val tip-pos">${{Number(it.xp).toFixed(2)}}</div>`;
+  }});
+  return `<div class="tip-title">${{escHtml(playerName)}} — 6 kolejek</div><div class="tip-grid">${{rows}}</div><div class="tip-total"><span>Suma 6 GW</span><span>${{Number(total).toFixed(2)}} pkt</span></div>`;
+}}
+
+function xptsTierClass(v) {{
+  if (v <= 0.05) return 'xp-tier-0';
+  if (v >= 5.5) return 'xp-tier-5';
+  if (v >= 4.0) return 'xp-tier-4';
+  if (v >= 2.7) return 'xp-tier-3';
+  return 'xp-tier-2';
+}}
 let plSort = {{ col: 'points', asc: false }};
 let pSort = {{ col: 'G', asc: false }};
-let kSort = {{ col: 'EV_6GW', asc: false }};
+let kSort = {{ col: 'xPts_6GW', asc: false }};
 let fdrMode = 'fdr_overall';
 let planerCellMode = 'text';
 let selectedLineupGw = planerGWs[0] || nextGwNum;
@@ -1303,15 +1586,6 @@ let lastPlacedPlayer = null;
 
 const POS_RANK = {{ GKP: 1, DEF: 2, MID: 3, FWD: 4 }};
 const STORAGE_KEY = 'fpl_v7_planer_state_v3';
-
-function escHtml(s) {{
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}}
 
 function normStr(s) {{
   return (s || '')
@@ -1378,8 +1652,44 @@ function loadPlanerState() {{
     benchMap: {{}}
   }};
 }}
+
 function savePlanerState() {{
   try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(planerState)); }} catch (e) {{}}
+}}
+
+function getMySquadSet() {{
+  const s = new Set();
+  (planerState.squad || []).forEach(r => {{
+    if (r.player) s.add(r.player);
+  }});
+  return s;
+}}
+
+function getMyTargetsSet() {{
+  const s = new Set();
+  (planerState.targets || []).forEach(r => {{
+    if (r.player) s.add(r.player);
+  }});
+  return s;
+}}
+
+function addTargetFromKokpit(playerName) {{
+  if (!playerName) return;
+  const inSquad = getMySquadSet().has(playerName);
+  if (inSquad) {{
+    showToast(`👕 ${{playerName}} jest już w Twoim składzie w Planerze.`);
+    return;
+  }}
+  const already = (planerState.targets || []).some(r => r.player === playerName);
+  if (already) {{
+    showToast(`🎯 ${{playerName}} jest już na liście celów IN w Planerze.`);
+    return;
+  }}
+  planerState.targets.push({{ player: playerName, status: '', inGw: String(nextGwNum) }});
+  savePlanerState();
+  renderPlaner();
+  renderKokpit();
+  showToast(`🎯 Dodano ${{playerName}} do Celów IN w Planerze (GW${{nextGwNum}}).`);
 }}
 
 let toastTimer = null;
@@ -1436,13 +1746,14 @@ function renderPL() {{
 function sortPL(c) {{ plSort = {{ col: c, asc: plSort.col === c ? !plSort.asc : false }}; renderPL(); }}
 
 // ============================================================================
-// 2. TABELA PIŁKARZY
+// 2. TABELA PIŁKARZY (Status, DefCon, Obrony, Bonus, BPS/90, ŻK)
 // ============================================================================
 function initPlayersFilter() {{
   const teams = [...new Set(dataPlayers.map(p => p.team))].sort();
   const sel = document.getElementById('pTeam');
   teams.forEach(t => {{ const o = document.createElement('option'); o.value = t; o.textContent = t; sel.appendChild(o); }});
 }}
+
 function renderPlayers() {{
   const q = normStr(document.getElementById('pSearch').value);
   const qAlt = q.replace(/dj/g, 'd');
@@ -1460,19 +1771,50 @@ function renderPlayers() {{
   }});
   rows.sort((a, b) => cmpVal(a[pSort.col], b[pSort.col], pSort.asc));
   document.getElementById('pCount').innerText = `Piłkarze: ${{rows.length}} / ${{dataPlayers.length}}`;
-  const cols = ['player','team','apps','min','G','A','xG','NPxG','xA','xGChain','xG90','xA90','Pozycja','Posiadanie','Cena'];
-  let html = '<thead><tr><th>#</th>' + cols.map(c =>
-    `<th onclick="sortPlayers('${{c}}')">${{c}}${{c === 'xGChain' ? tipIcon('P_XGCHAIN') : ''}} ${{pSort.col===c ? (pSort.asc?'▲':'▼') : ''}}</th>`
-  ).join('') + '</tr></thead><tbody>';
+
+  const cols = [
+    {{ k: 'player', lbl: 'Piłkarz', cls: 'text-left sticky-col' }},
+    {{ k: 'team', lbl: 'Klub', cls: 'text-left' }},
+    {{ k: 'Pozycja', lbl: 'Poz', cls: 'text-center' }},
+    {{ k: 'Cena', lbl: 'Cena', fmt: v => Number(v).toFixed(1) }},
+    {{ k: 'chance', lbl: 'Status', cls: 'text-center', isStatus: true, tip: 'P_STATUS' }},
+    {{ k: 'apps', lbl: 'Starty' }},
+    {{ k: 'min', lbl: 'Min' }},
+    {{ k: 'G', lbl: 'G' }},
+    {{ k: 'A', lbl: 'A' }},
+    {{ k: 'xG', lbl: 'xG' }},
+    {{ k: 'NPxG', lbl: 'NPxG' }},
+    {{ k: 'xA', lbl: 'xA' }},
+    {{ k: 'xGChain', lbl: 'xGChain', tip: 'P_XGCHAIN' }},
+    {{ k: 'xG90', lbl: 'xG90' }},
+    {{ k: 'xA90', lbl: 'xA90' }},
+    {{ k: 'DefCon', lbl: 'DefCon', tip: 'P_DEFCON' }},
+    {{ k: 'DefCon90', lbl: 'DefCon/90', tip: 'P_DEFCON', isDC: true }},
+    {{ k: 'Obrony', lbl: 'Obrony', tip: 'P_SAVES' }},
+    {{ k: 'Bonus', lbl: 'Bonus', tip: 'P_BONUS' }},
+    {{ k: 'BPS90', lbl: 'BPS/90', tip: 'P_BONUS' }},
+    {{ k: 'ZK', lbl: 'ŻK' }},
+    {{ k: 'Posiadanie', lbl: 'Posiadanie', fmt: v => (Number(v) * 100).toFixed(1) + '%' }}
+  ];
+
+  let html = '<thead><tr><th>#</th>' + cols.map(c => {{
+    const sticky = c.k === 'player' ? 'sticky-col' : '';
+    return `<th class="${{sticky}}" onclick="sortPlayers('${{c.k}}')">${{c.lbl}}${{tipIcon(c.tip)}} ${{pSort.col===c.k ? (pSort.asc?'▲':'▼') : ''}}</th>`;
+  }}).join('') + '</tr></thead><tbody>';
+
   rows.forEach((r, idx) => {{
     html += `<tr><td class="text-center">${{idx+1}}</td>`;
     cols.forEach(c => {{
-      let val = r[c];
-      let cls = '';
-      if (c === 'player' || c === 'team') cls = 'text-left';
-      else if (c === 'Pozycja') cls = 'text-center';
-      else if (c === 'Posiadanie') val = (r[c] * 100).toFixed(1) + '%';
-      html += `<td class="${{cls}}">${{escHtml(val)}}</td>`;
+      if (c.isStatus) {{
+        const pct = r.status === 'u' ? 'OUT' : (r.chance + '%');
+        html += `<td class="text-center">${{statusDotHtml(r.status, r.chance, r.news)}}<span style="font-size:11px;">${{pct}}</span></td>`;
+      }} else if (c.isDC) {{
+        const hi = (r.Pozycja === 'DEF' && r.DefCon90 >= 10) || ((r.Pozycja === 'MID' || r.Pozycja === 'FWD') && r.DefCon90 >= 12);
+        html += `<td class="${{hi ? 'dc-hi' : ''}}">${{Number(r.DefCon90).toFixed(1)}}</td>`;
+      }} else {{
+        const val = c.fmt ? c.fmt(r[c.k]) : r[c.k];
+        html += `<td class="${{c.cls || ''}}">${{escHtml(val)}}</td>`;
+      }}
     }});
     html += '</tr>';
   }});
@@ -1512,13 +1854,14 @@ function renderFDR() {{
 }}
 
 // ============================================================================
-// 4. KOKPIT
+// 4. KOKPIT (silnik xPts, paragony w dymkach, SFG, flagi zdrowia, link do Planera)
 // ============================================================================
 function getKokpitSortValue(row, col) {{
   if (['m1','m2','m3','m4','m5','m6'].includes(col)) return row[col].fdr;
   if (col.startsWith('xgc')) return row['m' + col.slice(3)].xgc;
   return row[col];
 }}
+
 function renderKokpit() {{
   const q = normStr(document.getElementById('kSearch').value);
   const qAlt = q.replace(/dj/g, 'd');
@@ -1527,7 +1870,12 @@ function renderKokpit() {{
   const trend = document.getElementById('kTrend').value;
   const minSt = document.getElementById('kMinStat').value;
   const scen = document.getElementById('kScen').value;
+  const onlyMine = document.getElementById('kOnlyMine').checked;
+  const hideInj = document.getElementById('kHideInj').checked;
   const showTech = document.getElementById('kShowTech').checked;
+
+  const mySquadSet = getMySquadSet();
+  const myTargetsSet = getMyTargetsSet();
 
   let rows = dataKokpit.filter(r => {{
     if (q) {{
@@ -1540,6 +1888,8 @@ function renderKokpit() {{
     if (trend !== 'ALL' && r.Trend_Code !== trend) return false;
     if (minSt !== 'ALL' && r.Status_Min !== minSt) return false;
     if (scen !== 'ALL' && r.Szyfr !== scen) return false;
+    if (onlyMine && !mySquadSet.has(r.Zawodnik)) return false;
+    if (hideInj && (r.chance === 0 || r.status === 'u')) return false;
     return true;
   }});
 
@@ -1547,27 +1897,44 @@ function renderKokpit() {{
   document.getElementById('kCount').innerText = `Gracze w Kokpicie: ${{rows.length}} (>=50m sezon lub L5)`;
 
   let cols = [
-    {{ k: 'Zawodnik', lbl: 'Zawodnik', cls: 'text-left sticky-col' }},
+    {{ k: 'Zawodnik', lbl: 'Zawodnik', cls: 'text-left sticky-col', isPlayer: true }},
     {{ k: 'Klub', lbl: 'Klub', cls: 'text-left' }},
-    {{ k: 'Cena', lbl: 'Cena' }},
-    {{ k: 'Minuty', lbl: 'Minuty' }},
-    {{ k: 'xGI90', lbl: 'xGI90', tip: 'K_XGI90' }},
+    {{ k: 'Pozycja', lbl: 'Poz', cls: 'text-center' }},
+    {{ k: 'Cena', lbl: 'Cena', fmt: v => Number(v).toFixed(1) }},
+    {{ k: 'Minuty', lbl: 'Min' }},
+    {{ k: 'xMins', lbl: 'xMins', tip: 'K_XMINS' }},
+    {{ k: 'xGI90', lbl: 'xGI90', fmt: v => Number(v).toFixed(2), tip: 'K_XGI90' }},
+    {{ k: 'DefCon90', lbl: 'DefCon/90', isDC: true, tip: 'K_DEFCON90' }},
     {{ k: 'Min_L5', lbl: 'Min L5', thCls: 'l5-hdr', cls: 'l5-col', isMinL5: true, tip: 'K_MIN_L5' }},
     {{ k: 'xG_L5', lbl: 'xG L5', thCls: 'l5-hdr', cls: 'l5-col', fmt: v => Number(v).toFixed(2), tip: 'K_XG_L5' }},
     {{ k: 'xGI90_L5', lbl: 'xGI90 L5', thCls: 'l5-hdr', isL5Trend: true, tip: 'K_XGI90_L5' }},
-    {{ k: 'xGC90_Team', lbl: 'xGC/90 Drużyny', tip: 'K_XGC_TEAM' }},
+    {{ k: 'xGC90_Team', lbl: 'xGC/90 Drużyny', fmt: v => Number(v).toFixed(2), tip: 'K_XGC_TEAM' }},
+    {{ k: 'Szansa_CS', lbl: 'Szansa na CS', fmt: v => v + '%', tip: 'K_CS' }},
+    {{ k: 'xPts_GW', lbl: `xPts ${{rollingGWs[0] || 'GW'}}`, thCls: 'xpts-hdr', isXpts1: true, tip: 'K_XPTS_GW' }},
+  ];
+
+  if (showTech) {{
+    cols.push(
+      {{ k: 'xPts_Atk1', lbl: 'xPts Atak', thCls: 'xpts-hdr', fmt: v => Number(v).toFixed(2) }},
+      {{ k: 'xPts_Def1', lbl: 'xPts CS/Obr', thCls: 'xpts-hdr', fmt: v => Number(v).toFixed(2) }},
+      {{ k: 'xPts_DC1', lbl: 'xPts DefCon', thCls: 'xpts-hdr', fmt: v => Number(v).toFixed(2) }},
+      {{ k: 'xPts_Bon1', lbl: 'xPts Bon/K', thCls: 'xpts-hdr', fmt: v => Number(v).toFixed(2) }}
+    );
+  }}
+
+  cols.push(
+    {{ k: 'xPts_6GW', lbl: 'xPts 6GW', thCls: 'xpts-hdr', isXpts6: true, tip: 'K_XPTS_6GW' }},
+    {{ k: 'xPts_Val', lbl: 'xPts/£', thCls: 'xpts-hdr', fmt: v => Number(v).toFixed(2), tip: 'K_XPTS_VAL' }},
+    {{ k: 'Radar', lbl: 'Radar', cls: 'text-left', tip: 'K_RADAR' }},
     {{ k: 'Werdykt1', lbl: 'Werdykt (Atak)', cls: 'text-left', tip: 'K_W1' }},
     {{ k: 'Ocena_Obrony', lbl: 'Ocena obrony', cls: 'text-left', tip: 'K_OBR' }},
-    {{ k: 'Szansa_CS', lbl: 'Szansa na CS', fmt: v => v + '%', tip: 'K_CS' }},
-    {{ k: 'EV_GW', lbl: 'EV GW', tip: 'K_EV_GW' }},
-    {{ k: 'Pozycja', lbl: 'Pozycja', cls: 'text-center' }},
-    {{ k: 'Posiadanie', lbl: 'Posiadanie', fmt: v => v + '%' }},
     {{ k: 'Werdykt2', lbl: 'Werdykt (Poz)', cls: 'text-left', tip: 'K_W2' }},
+    {{ k: 'Posiadanie', lbl: 'Posiadanie', fmt: v => v + '%' }},
     {{ k: 'Status_EO', lbl: 'Status EO', cls: 'text-left', tip: 'K_EO' }},
     {{ k: 'm1', lbl: rollingGWs[0] || 'Mecz 1', isFix: true }},
-    {{ k: 'xgc1', lbl: 'GC Rywala (H/A)', tip: 'K_GC_OPP' }},
-    {{ k: 'm2', lbl: rollingGWs[1] || 'Mecz 2', isFix: true }},
-  ];
+    {{ k: 'xgc1', lbl: 'GC Rywala (H/A)', fmt: v => Number(v).toFixed(2), tip: 'K_GC_OPP' }},
+    {{ k: 'm2', lbl: rollingGWs[1] || 'Mecz 2', isFix: true }}
+  );
   if (showTech) cols.push({{ k: 'xgc2', lbl: 'xGC 2' }});
   cols.push({{ k: 'm3', lbl: rollingGWs[2] || 'Mecz 3', isFix: true }});
   if (showTech) cols.push({{ k: 'xgc3', lbl: 'xGC 3' }});
@@ -1578,11 +1945,7 @@ function renderKokpit() {{
   cols.push({{ k: 'm6', lbl: rollingGWs[5] || 'Mecz 6', isFix: true }});
   if (showTech) cols.push({{ k: 'xgc6', lbl: 'xGC 6' }});
 
-  cols.push(
-    {{ k: 'EV_6GW', lbl: 'EV 6GW', tip: 'K_EV_6GW' }},
-    {{ k: 'Radar', lbl: 'Radar', cls: 'text-left' }},
-    {{ k: 'Status_Min', lbl: 'Status minutowy', cls: 'text-left' }}
-  );
+  cols.push({{ k: 'Status_Min', lbl: 'Status minutowy', cls: 'text-left' }});
   if (showTech) cols.push({{ k: 'Szyfr', lbl: 'Szyfr', cls: 'text-center' }});
   cols.push({{ k: 'Scenariusz', lbl: `Przewidywany Scenariusz (${{rollingGWs[0]}})`, isScen: true, tip: 'K_SCEN' }});
   if (showTech) cols.push({{ k: 'Booster', lbl: 'Booster' }});
@@ -1596,8 +1959,34 @@ function renderKokpit() {{
   rows.forEach((r, idx) => {{
     html += `<tr><td class="text-center">${{idx+1}}</td>`;
     cols.forEach(c => {{
-      if (c.isFix) {{
-        html += `<td class="fdr-${{r[c.k].fdr}}">${{r[c.k].text}}</td>`;
+      if (c.isPlayer) {{
+        const dot = statusDotHtml(r.status, r.chance, r.news);
+        const mine = mySquadSet.has(r.Zawodnik)
+          ? `<span class="tag-icon" title="Ten zawodnik jest w Twoim składzie w Planerze">👕</span>`
+          : '';
+        const penTag = r.is_pen
+          ? `<span class="tag-icon" title="1. wykonawca rzutów karnych (FPL API)">🎯</span>`
+          : '';
+        const spTag = r.is_setp
+          ? `<span class="tag-icon" title="1. wykonawca rzutów rożnych / wolnych (FPL API)">🚩</span>`
+          : '';
+        const inBtn = (!mySquadSet.has(r.Zawodnik) && !myTargetsSet.has(r.Zawodnik))
+          ? `<button class="btn-mini-in" data-p="${{escHtml(r.Zawodnik)}}" title="Dodaj do Celów IN w Planerze" onclick="event.stopPropagation(); addTargetFromKokpit(this.dataset.p)">+</button>`
+          : (myTargetsSet.has(r.Zawodnik) ? `<span class="tag-icon" title="Już na liście Celów IN w Planerze">🎯IN</span>` : '');
+        html += `<td class="${{c.cls}}">${{dot}}${{escHtml(r.Zawodnik)}}${{mine}}${{penTag}}${{spTag}}${{inBtn}}</td>`;
+      }} else if (c.isXpts1) {{
+        const note = r.chance < 100 ? `Uwzględniono flagę dostępności: ${{r.chance}}%` : `xMins bazowe: ${{r.xMins}} min`;
+        const tipHtml = encodeURIComponent(buildXptsReceiptHtml(r.xPts_GW_Brk, `${{r.Zawodnik}} — ${{rollingGWs[0]}} (${{r.m1.text || 'BLANK'}})`, r.xPts_GW, note));
+        html += `<td class="xpts-cell" data-tip-html="${{tipHtml}}" onclick="event.stopPropagation(); toggleInlineTip(this)" onmouseenter="showInlineTip(this)" onmouseleave="hideTip()">${{r.xPts_GW.toFixed(2)}}</td>`;
+      }} else if (c.isXpts6) {{
+        const tipHtml = encodeURIComponent(buildXpts6Html(r.xPts_6_List, r.Zawodnik, r.xPts_6GW));
+        html += `<td class="xpts-cell" data-tip-html="${{tipHtml}}" onclick="event.stopPropagation(); toggleInlineTip(this)" onmouseenter="showInlineTip(this)" onmouseleave="hideTip()">${{r.xPts_6GW.toFixed(2)}}</td>`;
+      }} else if (c.isDC) {{
+        const hi = (r.Pozycja === 'DEF' && r.DefCon90 >= 10) || ((r.Pozycja === 'MID' || r.Pozycja === 'FWD') && r.DefCon90 >= 12);
+        html += `<td class="${{hi ? 'dc-hi' : ''}}">${{Number(r.DefCon90).toFixed(1)}}</td>`;
+      }} else if (c.isFix) {{
+        const fx = r[c.k];
+        html += `<td class="fdr-${{fx.fdr}}" title="Prognoza w tym meczu: ${{Number(fx.xp || 0).toFixed(2)}} xPts">${{fx.text}}</td>`;
       }} else if (c.isScen) {{
         html += `<td class="scen-${{r.Szyfr}}">${{r.Scenariusz}}</td>`;
       }} else if (c.isL5Trend) {{
@@ -1667,8 +2056,19 @@ function renderScanner() {{
 }}
 
 // ============================================================================
-// 6. PLANER
+// 6. PLANER (z pełną integracją xPts, prognozą XI, kapitanem i Auto-ławką xPts)
 // ============================================================================
+function getPlayerGwXptsObj(playerName, gw) {{
+  const rec = planerXptsMap[playerName];
+  if (!rec || !rec.gws) return {{ t: 0.0, b: [0,0,0,0,0,0,0,0,0] }};
+  return rec.gws[String(gw)] || {{ t: 0.0, b: [0,0,0,0,0,0,0,0,0] }};
+}}
+
+function getPlayer6GwXpts(playerName) {{
+  const rec = planerXptsMap[playerName];
+  return rec ? Number(rec.x6 || 0) : 0.0;
+}}
+
 function sortSquadByPosition() {{
   const indexed = planerState.squad.map((row, i) => {{
     const pInfo = findExactPlayer(row.player);
@@ -1703,7 +2103,7 @@ function positionDropdown(inputEl) {{
   const menu = document.getElementById('playerDropdownMenu');
   const rect = inputEl.getBoundingClientRect();
   const spaceBelow = window.innerHeight - rect.bottom;
-  menu.style.left = Math.min(rect.left, window.innerWidth - 300) + 'px';
+  menu.style.left = Math.min(rect.left, window.innerWidth - 305) + 'px';
   if (spaceBelow < 220 && rect.top > 240) {{
     menu.style.top = 'auto';
     menu.style.bottom = (window.innerHeight - rect.top + 2) + 'px';
@@ -1759,6 +2159,7 @@ function selectDropdownPlayer(matchIdx) {{
   savePlanerState();
   closePlayerDropdown();
   renderPlaner();
+  renderKokpit();
 }}
 
 function handleComboKeydown(ev, section, idx) {{
@@ -1786,6 +2187,7 @@ function handleComboKeydown(ev, section, idx) {{
       savePlanerState();
       closePlayerDropdown();
       renderPlaner();
+      renderKokpit();
     }} else if (ddCtx.matches.length) {{
       selectDropdownPlayer(ddCtx.activeIdx);
     }} else {{
@@ -1813,6 +2215,7 @@ function handleComboBlur(inputEl, section, idx) {{
         if (section === 'squad') sortSquadByPosition();
         savePlanerState();
         renderPlaner();
+        renderKokpit();
       }}
       return;
     }}
@@ -1827,6 +2230,7 @@ function handleComboBlur(inputEl, section, idx) {{
         }}
         savePlanerState();
         renderPlaner();
+        renderKokpit();
       }} else {{
         inputEl.value = exact.player;
       }}
@@ -1890,8 +2294,7 @@ function toggleBenchInGw(playerName, gw) {{
 }}
 function setPlanerCellMode(mode, btn) {{
   planerCellMode = mode;
-  document.getElementById('pViewTxt').classList.remove('active');
-  document.getElementById('pViewNum').classList.remove('active');
+  ['pViewTxt', 'pViewNum', 'pViewXp'].forEach(id => document.getElementById(id).classList.remove('active'));
   btn.classList.add('active');
   renderPlaner();
 }}
@@ -1914,6 +2317,7 @@ function deletePlanerRow(section, idx) {{
   planerState[section].splice(idx, 1);
   savePlanerState();
   renderPlaner();
+  renderKokpit();
 }}
 function promoteTargetToSquad(idx) {{
   const t = planerState.targets[idx];
@@ -1925,6 +2329,7 @@ function promoteTargetToSquad(idx) {{
   lastPlacedPlayer = t.player;
   savePlanerState();
   renderPlaner();
+  renderKokpit();
   showToast(`⬆️ ${{t.player}} wskoczył prosto do strefy ${{pInfo ? pInfo.Pozycja : 'składu'}}!`);
 }}
 function exportPlaner() {{
@@ -1944,6 +2349,7 @@ function importPlaner() {{
       sortSquadByPosition();
       savePlanerState();
       renderPlaner();
+      renderKokpit();
       showToast("✅ Zaimportowano stan Planera!");
     }} else alert("❌ Nieprawidłowy format danych.");
   }} catch (e) {{ alert("❌ Błąd parsowania JSON: " + e.message); }}
@@ -1958,6 +2364,7 @@ function resetPlaner() {{
   sortSquadByPosition();
   savePlanerState();
   renderPlaner();
+  renderKokpit();
 }}
 
 function buildPlanerRowsHtml(section) {{
@@ -1971,6 +2378,7 @@ function buildPlanerRowsHtml(section) {{
     const teamShort = pInfo ? pInfo.team_short : '—';
     const pos = pInfo ? pInfo.Pozycja : '—';
     const price = pInfo ? pInfo.Cena.toFixed(1) : '—';
+    const x6 = pInfo ? getPlayer6GwXpts(pInfo.player).toFixed(1) : '—';
     const dec = calcPlanerDecision(r, pInfo, isSquad);
     const boundGw = parseInt(isSquad ? r.outGw : r.inGw, 10);
 
@@ -1987,6 +2395,7 @@ function buildPlanerRowsHtml(section) {{
     }}
 
     const safeName = escHtml(r.player || '');
+    const dotHtml = pInfo ? statusDotHtml(pInfo.status, pInfo.chance, pInfo.news) : '';
     const stOpts = ['', '💎 Premium', '🪵 Słup', '♻️ Rotacja'].map(s =>
       `<option value="${{s}}" ${{r.status===s?'selected':''}}>${{s || '—'}}</option>`
     ).join('');
@@ -1994,6 +2403,7 @@ function buildPlanerRowsHtml(section) {{
     html += `<tr class="${{rowClasses.join(' ')}}">
       <td class="text-left sticky-col">
         <div class="p-combo-wrap">
+          ${{dotHtml}}
           <input class="p-input" data-section="${{section}}" type="text" autocomplete="off" value="${{safeName}}" placeholder="Wpisz i wybierz z listy..."
                  onfocus="this.select(); openPlayerDropdown(this, '${{section}}', ${{idx}})"
                  oninput="renderPlayerDropdown(this.value)"
@@ -2006,19 +2416,34 @@ function buildPlanerRowsHtml(section) {{
       </td>
       <td class="text-center"><b>${{teamShort}}</b></td>
       <td class="text-center"><b>${{pos}}</b></td>
-      <td>${{price}}</td>`;
+      <td>${{price}}</td>
+      <td class="xpts-cell" style="cursor:default; text-decoration:none;">${{x6}}</td>`;
 
     planerGWs.forEach(gw => {{
       const fx = pInfo ? getPosFixture(pInfo.team_short, pInfo.Pozycja, gw) : {{ text: '—', fdr: 0 }};
+      const xpObj = pInfo ? getPlayerGwXptsObj(pInfo.player, gw) : {{ t: 0, b: [0,0,0,0,0,0,0,0,0] }};
       const inactive = !isNaN(boundGw) && (isSquad ? (gw >= boundGw) : (gw < boundGw));
       const benched = !inactive && pInfo && isBenchInGw(pInfo.player, gw);
-      const disp = planerCellMode === 'num' ? (fx.fdr || '—') : fx.text;
+
+      let disp, colorCls;
+      if (planerCellMode === 'num') {{
+        disp = fx.fdr || '—';
+        colorCls = 'fdr-' + fx.fdr;
+      }} else if (planerCellMode === 'xpts') {{
+        disp = pInfo ? xpObj.t.toFixed(1) : '—';
+        colorCls = pInfo ? xptsTierClass(xpObj.t) : 'fdr-0';
+      }} else {{
+        disp = fx.text;
+        colorCls = 'fdr-' + fx.fdr;
+      }}
+
       const badge = benched ? `<span class="badge-mini">Ł</span>` : '';
-      const cls = `cell-fix fdr-${{fx.fdr}} ${{inactive ? 'cell-inactive' : ''}} ${{benched ? 'cell-bench' : ''}}`;
+      const cls = `cell-fix ${{colorCls}} ${{inactive ? 'cell-inactive' : ''}} ${{benched ? 'cell-bench' : ''}}`;
+      const tipTxt = pInfo ? `${{fx.text}} · Prognoza: ${{xpObj.t.toFixed(2)}} xPts (kliknij: przełącz XI / Ławka w GW${{gw}})` : '';
       const dataAttrs = pInfo
         ? `data-player="${{escHtml(pInfo.player)}}" data-gw="${{gw}}" onclick="toggleBenchInGw(this.dataset.player, Number(this.dataset.gw))"`
         : '';
-      html += `<td class="${{cls}}" ${{dataAttrs}} title="${{pInfo ? 'Kliknij: przełącz Skład XI / Ławka w GW'+gw : ''}}">${{disp}}${{badge}}</td>`;
+      html += `<td class="${{cls}}" ${{dataAttrs}} title="${{escHtml(tipTxt)}}">${{disp}}${{badge}}</td>`;
     }});
 
     const gwField = isSquad ? 'outGw' : 'inGw';
@@ -2041,7 +2466,7 @@ function buildPlanerRowsHtml(section) {{
 
 function renderPlanerMainTable() {{
   sortSquadByPosition();
-  const totalCols = 5 + planerGWs.length + 3;
+  const totalCols = 6 + planerGWs.length + 3;
 
   const counts = {{ GKP: 0, DEF: 0, MID: 0, FWD: 0 }};
   planerState.squad.forEach(r => {{
@@ -2058,7 +2483,8 @@ function renderPlanerMainTable() {{
   let html = `<thead><tr>
     <th class="sticky-col">Zawodnik (wybór z listy)</th>
     <th>Status${{tipIcon('PLR_STATUS')}}</th>
-    <th>Klub</th><th>Poz</th><th>Cena</th>`;
+    <th>Klub</th><th>Poz</th><th>Cena</th>
+    <th class="xpts-hdr">xPts 6GW${{tipIcon('K_XPTS_6GW')}}</th>`;
   planerGWs.forEach(gw => {{
     const hi = gw === selectedLineupGw ? 'gw-now' : '';
     html += `<th class="${{hi}}" onclick="selectLineupGw(${{gw}})" title="Kliknij, aby zobaczyć przymiarkę na GW${{gw}}">GW${{gw}}</th>`;
@@ -2085,7 +2511,7 @@ function getActivePlayersForGw(gw) {{
     const pInfo = findExactPlayer(r.player);
     if (pInfo && !seen.has(pInfo.player)) {{
       seen.add(pInfo.player);
-      activePlayers.push({{ ...pInfo, status: r.status, source: 'Skład' }});
+      activePlayers.push({{ ...pInfo, status_planer: r.status, source: 'Skład' }});
     }}
   }});
   planerState.targets.forEach(r => {{
@@ -2094,50 +2520,56 @@ function getActivePlayersForGw(gw) {{
     const pInfo = findExactPlayer(r.player);
     if (pInfo && !seen.has(pInfo.player)) {{
       seen.add(pInfo.player);
-      activePlayers.push({{ ...pInfo, status: r.status, source: 'IN' }});
+      activePlayers.push({{ ...pInfo, status_planer: r.status, source: 'IN' }});
     }}
   }});
   return activePlayers;
 }}
 
+// Optymalna Auto-ławka po najwyższej sumie xPts z zachowaniem legalnej formacji FPL
 function autoPickBenchForGw() {{
   const gw = selectedLineupGw;
-  const active = getActivePlayersForGw(gw).map(p => ({{
-    ...p,
-    fx: getPosFixture(p.team_short, p.Pozycja, gw)
-  }}));
-  const newBench = [];
-
-  const gkps = active.filter(p => p.Pozycja === 'GKP').sort((a, b) => b.fx.fdr - a.fx.fdr || a.Cena - b.Cena);
-  while (gkps.length > 1) {{
-    newBench.push(gkps.shift().player);
-  }}
-
-  const outfield = active.filter(p => p.Pozycja !== 'GKP');
-  outfield.sort((a, b) => {{
-    const sa = a.status === '🪵 Słup' ? 1 : 0;
-    const sb = b.status === '🪵 Słup' ? 1 : 0;
-    if (sb !== sa) return sb - sa;
-    if (b.fx.fdr !== a.fx.fdr) return b.fx.fdr - a.fx.fdr;
-    return a.Cena - b.Cena;
+  const active = getActivePlayersForGw(gw).map(p => {{
+    const xpObj = getPlayerGwXptsObj(p.player, gw);
+    const isSlup = p.status_planer === '🪵 Słup';
+    const effScore = isSlup ? (xpObj.t - 10.0) : xpObj.t;
+    return {{ ...p, xp: xpObj.t, effScore }};
   }});
 
-  const counts = {{ DEF: 0, MID: 0, FWD: 0 }};
-  outfield.forEach(p => counts[p.Pozycja]++);
-  const mins = {{ DEF: 3, MID: 2, FWD: 1 }};
+  const gkps = active.filter(p => p.Pozycja === 'GKP').sort((a, b) => b.effScore - a.effScore || b.Cena - a.Cena);
+  const defs = active.filter(p => p.Pozycja === 'DEF').sort((a, b) => b.effScore - a.effScore || b.Cena - a.Cena);
+  const mids = active.filter(p => p.Pozycja === 'MID').sort((a, b) => b.effScore - a.effScore || b.Cena - a.Cena);
+  const fwds = active.filter(p => p.Pozycja === 'FWD').sort((a, b) => b.effScore - a.effScore || b.Cena - a.Cena);
 
-  for (const p of outfield) {{
-    if (newBench.length >= (active.length - 11)) break;
-    if (counts[p.Pozycja] - 1 >= mins[p.Pozycja]) {{
-      newBench.push(p.player);
-      counts[p.Pozycja]--;
+  const picked = new Set();
+  if (gkps.length >= 1) picked.add(gkps[0].player);
+
+  let bestScore = -1e9;
+  let bestOut = [];
+  for (let d = 3; d <= Math.min(5, defs.length); d++) {{
+    for (let m = 2; m <= Math.min(5, mids.length); m++) {{
+      const f = 10 - d - m;
+      if (f < 1 || f > Math.min(3, fwds.length)) continue;
+      const cand = [...defs.slice(0, d), ...mids.slice(0, m), ...fwds.slice(0, f)];
+      const sc = cand.reduce((s, x) => s + x.effScore, 0);
+      if (sc > bestScore) {{
+        bestScore = sc;
+        bestOut = cand;
+      }}
     }}
   }}
 
-  planerState.benchMap[String(gw)] = newBench;
+  if (bestOut.length) {{
+    bestOut.forEach(x => picked.add(x.player));
+  }} else {{
+    const outAll = active.filter(p => p.Pozycja !== 'GKP').sort((a, b) => b.effScore - a.effScore);
+    outAll.slice(0, 10).forEach(x => picked.add(x.player));
+  }}
+
+  planerState.benchMap[String(gw)] = active.filter(p => !picked.has(p.player)).map(p => p.player);
   savePlanerState();
   renderPlaner();
-  showToast(`⚡ Ustawiono automatyczną ławkę na GW${{gw}}`);
+  showToast(`⚡ Ustawiono optymalną XI pod najwyższe xPts na GW${{gw}}!`);
 }}
 
 function selectLineupGw(gw) {{
@@ -2157,30 +2589,38 @@ function renderLineupTables() {{
 
   activePlayers.forEach(p => {{
     const fx = getPosFixture(p.team_short, p.Pozycja, selectedLineupGw);
-    const item = {{ ...p, fx }};
+    const xpObj = getPlayerGwXptsObj(p.player, selectedLineupGw);
+    const item = {{ ...p, fx, xp: xpObj.t, brk: xpObj.b }};
     if (isBenchInGw(p.player, selectedLineupGw)) bench.push(item);
     else xi.push(item);
   }});
-  xi.sort((a, b) => POS_RANK[a.Pozycja] - POS_RANK[b.Pozycja] || a.fx.fdr - b.fx.fdr);
-  bench.sort((a, b) => POS_RANK[a.Pozycja] - POS_RANK[b.Pozycja] || a.fx.fdr - b.fx.fdr);
+  xi.sort((a, b) => POS_RANK[a.Pozycja] - POS_RANK[b.Pozycja] || b.xp - a.xp);
+  bench.sort((a, b) => POS_RANK[a.Pozycja] - POS_RANK[b.Pozycja] || b.xp - a.xp);
+
+  const capPlayer = xi.length ? xi.reduce((best, cur) => (cur.xp > best.xp ? cur : best), xi[0]) : null;
 
   function buildMiniTable(list, isXi) {{
-    let h = `<thead><tr><th>Poz</th><th>Zawodnik</th><th>Klub</th><th>Cena</th><th>GW${{selectedLineupGw}}</th><th>Akcja</th></tr></thead><tbody>`;
+    let h = `<thead><tr><th>Poz</th><th>Zawodnik</th><th>Klub</th><th>Cena</th><th>GW${{selectedLineupGw}}</th><th class="xpts-hdr">xPts</th><th>Akcja</th></tr></thead><tbody>`;
     if (!list.length) {{
-      h += `<tr><td colspan="6" style="color:#888;padding:12px;">Brak zawodników</td></tr>`;
+      h += `<tr><td colspan="7" style="color:#888;padding:12px;">Brak zawodników</td></tr>`;
     }} else {{
       let prevP = null;
       list.forEach(p => {{
+        const dot = statusDotHtml(p.status, p.chance, p.news);
         const inTag = p.source === 'IN' ? `<span style="font-size:10px;background:#107c41;color:#fff;padding:1px 4px;border-radius:3px;margin-right:4px;">IN</span>` : '';
+        const capTag = (isXi && capPlayer && capPlayer.player === p.player && p.xp > 0) ? `<span class="cap-badge" title="Sugerowany kapitan (najwyższe xPts w XI)">C</span>` : '';
         const btnLbl = isXi ? '→ Ławka' : '← Do XI';
         const sepCls = (prevP !== null && prevP !== p.Pozycja) ? 'zone-border-top' : '';
         prevP = p.Pozycja;
+        const note = (selectedLineupGw === nextGwNum && p.chance < 100) ? `Flaga dostępności: ${{p.chance}}%` : '';
+        const tipHtml = encodeURIComponent(buildXptsReceiptHtml(p.brk, `${{p.player}} — GW${{selectedLineupGw}} (${{p.fx.text}})`, p.xp, note));
         h += `<tr class="zone-${{p.Pozycja}} ${{sepCls}}">
           <td><b>${{p.Pozycja}}</b></td>
-          <td class="text-left">${{inTag}}${{escHtml(p.player)}}</td>
+          <td class="text-left">${{dot}}${{inTag}}${{escHtml(p.player)}}${{capTag}}</td>
           <td>${{p.team_short}}</td>
           <td>£${{p.Cena.toFixed(1)}}</td>
           <td class="fdr-${{p.fx.fdr}} cell-fix">${{p.fx.text}}</td>
+          <td class="xpts-cell" data-tip-html="${{tipHtml}}" onclick="event.stopPropagation(); toggleInlineTip(this)" onmouseenter="showInlineTip(this)" onmouseleave="hideTip()">${{p.xp.toFixed(2)}}</td>
           <td><button class="act-btn" data-player="${{escHtml(p.player)}}" data-gw="${{selectedLineupGw}}" onclick="toggleBenchInGw(this.dataset.player, Number(this.dataset.gw))">${{btnLbl}}</button></td>
         </tr>`;
       }});
@@ -2199,8 +2639,9 @@ function renderLineupTables() {{
   const cntMID = xi.filter(x => x.Pozycja === 'MID').length;
   const cntFWD = xi.filter(x => x.Pozycja === 'FWD').length;
   const totalCost = activePlayers.reduce((s, p) => s + p.Cena, 0);
-  const xiFdrs = xi.map(x => x.fx.fdr).filter(v => v > 0);
-  const avgFdr = xiFdrs.length ? (xiFdrs.reduce((a, b) => a + b, 0) / xiFdrs.length).toFixed(2) : '—';
+  const xiXpts = xi.reduce((s, p) => s + p.xp, 0);
+  const capTotal = xiXpts + (capPlayer ? capPlayer.xp : 0);
+  const capLabel = capPlayer ? capPlayer.web_name : '—';
 
   const clubCounts = {{}};
   activePlayers.forEach(p => {{ clubCounts[p.team_short] = (clubCounts[p.team_short] || 0) + 1; }});
@@ -2214,8 +2655,9 @@ function renderLineupTables() {{
     <span class="${{okXI ? 'val-ok' : 'val-err'}}">${{okXI ? '✅' : '⚠️'}} Skład XI: ${{xi.length}}/11</span>
     <span class="${{okForm ? 'val-ok' : 'val-err'}}">${{okForm ? '✅' : '⚠️'}} Formacja: ${{cntGKP}}-${{cntDEF}}-${{cntMID}}-${{cntFWD}}</span>
     <span class="${{okClubs ? 'val-ok' : 'val-err'}}">${{okClubs ? '✅ Max 3 z klubu OK' : '❌ Limit 3 z klubu: ' + overClubs.join(', ')}}</span>
-    <span>💰 Wartość kadry: <b>£${{totalCost.toFixed(1)}}m</b></span>
-    <span>📊 Śr. trudność XI w GW${{selectedLineupGw}}: <b>${{avgFdr}}</b></span>
+    <span>💰 Kadra: <b>£${{totalCost.toFixed(1)}}m</b></span>
+    <span class="val-xpts">🎯 Prognoza XI (GW${{selectedLineupGw}}): ${{xiXpts.toFixed(1)}} pkt</span>
+    <span class="val-cap">© z Kapitanem (${{escHtml(capLabel)}}): ${{capTotal.toFixed(1)}} pkt</span>
   `;
 }}
 
@@ -2239,4 +2681,4 @@ renderPlaner();
 with open("index.html", "w", encoding="utf-8") as f:
     f.write(html_app)
 
-print("GOTOWE! Wygenerowano świeży plik index.html.")
+print("GOTOWE! Wygenerowano świeży plik index.html z silnikiem xPts.")
