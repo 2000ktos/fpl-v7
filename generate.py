@@ -529,7 +529,7 @@ for _, p in df_players.iterrows():
 kokpit_rows.sort(key=lambda x: x['EV_6GW'], reverse=True)
 
 # ==============================================================================
-# 5. SKANER WILDCARD I FREE HIT
+# 5. SKANER WILDCARD I FREE HIT (Opcja 1: min. 3/5 kolejek >= MEDIANA)
 # ==============================================================================
 at_vals, top5_labels = [], []
 for gw_i in range(1, 39):
@@ -547,7 +547,7 @@ std_at_19 = float(np.std(at_vals[:19], ddof=1))
 aw_vals = [0.0 if at_vals[i] == 0 else float(np.mean(at_vals[i:i+5])) for i in range(38)]
 avg_aw_37 = float(np.mean(aw_vals[:37]))
 std_aw_37 = float(np.std(aw_vals[:37], ddof=1))
-avg_at_37 = float(np.mean(at_vals[:37]))
+med_at_37 = float(np.median(at_vals[:37]))
 
 scanner_rows = []
 for i in range(38):
@@ -560,7 +560,8 @@ for i in range(38):
     elif at_v >= avg_at_19: fh_verdict = "✅ Dobry moment na atak"
     else: fh_verdict = "⚠️ Trudna (Giganci grają ze sobą)"
 
-    cnt_good = sum(1 for x in window_5 if x >= avg_at_37)
+    # Opcja 1: stabilność liczona względem MEDIANY zamiast zawyżonej średniej
+    cnt_good = sum(1 for x in window_5 if x >= med_at_37)
     if aw_v == 0: wc_verdict = "⏳ Trwa zbieranie danych..."
     elif aw_v >= (avg_aw_37 + std_aw_37) and cnt_good >= 3: wc_verdict = "💣 ODPALAJ WILDCARD!"
     elif aw_v >= avg_aw_37 and cnt_good >= 3: wc_verdict = "✅ Długoterminowa autostrada"
@@ -925,7 +926,7 @@ html_app = f"""<!DOCTYPE html>
   <!-- 5. SKANER WILDCARD I FREE HIT -->
   <div id="tab-scanner" class="tab-view">
     <div class="toolbar">
-      <b>💣 Skaner Wildcard (5 GW) i Free Hit (przeniesiony z Kokpitu AR–AX)</b>
+      <b>💣 Skaner Wildcard (5 GW) i Free Hit (filtr WC: min. 3/5 GW &ge; Mediana)</b>
       <div class="toolbar-group" style="margin-left:16px;">
         <label>Zakres kolejek:</label>
         <select id="sScope" onchange="renderScanner()">
@@ -933,7 +934,7 @@ html_app = f"""<!DOCTYPE html>
           <option value="ALL">Cały sezon (GW1–GW38)</option>
         </select>
       </div>
-      <span style="margin-left:auto; font-size:12px; color:#555;">Próg FH (Śr+SD GW1-19): {(avg_at_19+std_at_19):.2f} | Próg WC (Śr+SD): {(avg_aw_37+std_aw_37):.2f}</span>
+      <span style="margin-left:auto; font-size:12px; color:#555;">Próg FH (Śr+SD GW1-19): {(avg_at_19+std_at_19):.2f} | Próg WC (Śr+SD): {(avg_aw_37+std_aw_37):.2f} | Mediana GW: {med_at_37:.2f}</span>
     </div>
     <div class="table-scroll">
       <table class="excel-table" id="tbl-scanner"></table>
