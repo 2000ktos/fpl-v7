@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import json
 import math
+import re
 import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -96,10 +97,15 @@ for gw_id in l5_gws:
             eid = int(el['id'])
             st = el.get('stats', {})
             if eid not in l5_stats:
-                l5_stats[eid] = {'min': 0, 'xg': 0.0, 'xa': 0.0}
-            l5_stats[eid]['min'] += int(st.get('minutes', 0) or 0)
+                l5_stats[eid] = {'min': 0, 'xg': 0.0, 'xa': 0.0, 'played': 0, 'last_min': 0}
+            m_gw = int(st.get('minutes', 0) or 0)
+            l5_stats[eid]['min'] += m_gw
             l5_stats[eid]['xg'] += float(st.get('expected_goals', 0.0) or 0.0)
             l5_stats[eid]['xa'] += float(st.get('expected_assists', 0.0) or 0.0)
+            if m_gw > 0:
+                l5_stats[eid]['played'] += 1
+            if gw_id == l5_gws[-1]:
+                l5_stats[eid]['last_min'] = m_gw
     except Exception as e:
         print(f"Ostrzeżenie: nie udało się pobrać kolejki GW{gw_id} dla L5 ({e})")
 
@@ -174,6 +180,8 @@ df_p['is_setp'] = ((cor_ord == 1) | (dfk_ord == 1)).astype(int)
 
 # Statystyki z ostatnich 5 kolejek (L5)
 df_p['min_l5'] = df_p['id'].map(lambda i: l5_stats.get(int(i), {}).get('min', 0)).astype(int)
+df_p['played_l5'] = df_p['id'].map(lambda i: l5_stats.get(int(i), {}).get('played', 0)).astype(int)
+df_p['last_min'] = df_p['id'].map(lambda i: l5_stats.get(int(i), {}).get('last_min', 0)).astype(int)
 df_p['xg_l5'] = df_p['id'].map(lambda i: l5_stats.get(int(i), {}).get('xg', 0.0)).astype(float)
 df_p['xa_l5'] = df_p['id'].map(lambda i: l5_stats.get(int(i), {}).get('xa', 0.0)).astype(float)
 
@@ -501,51 +509,51 @@ scenariusz_map = {
 }
 
 def calc_match_xpts(poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, saves90_eff,
-                    bonus90_eff, yc90_eff, rc90_eff, xgc90_team, opp, ha, xpts_boost):
-    xm = x_mins_base * avail
-    if xm <= 0.1 or not opp:
+                    bonus90_eff, yc90_eff, rc90_eff, xgc90_team, opp, ha, xpts_boost=1.0):
+    if x_mins_base <= 0.1 or avail <= 0.0 or not opp:
         return [0.0] * 9, 0.0, 0.0
 
     p_play_raw, p_60_raw = mins_to_probs(x_mins_base)
     p_play = p_play_raw * avail
     p_60 = p_60_raw * avail
-    mf = xm / 90.0
+    mf_play = x_mins_base / 90.0
+    mf = mf_play * avail
 
     # 1. Występ (1 pkt za grę + 1 pkt za >=60 min)
     pts_app = p_play + p_60
 
-    # Parametry rywala
+    # Parametry rywala (bez podwójnego liczenia xGA przez booster)
     opp_xga90 = short_to_xga.get(opp, med_npxgc90) / short_to_matches.get(opp, 1.0)
     opp_xg90 = short_to_xg.get(opp, med_xg90) / short_to_matches.get(opp, 1.0)
     opp_xga_ha = opp_xga90 * (1.15 if ha == "H" else 0.85)
     atk_mult = max(0.45, min(1.80, opp_xga_ha / max(med_npxgc90, 0.5)))
 
     # 2. Gole i 3. Asysty
-    exp_g = xg90_eff * mf * atk_mult * xpts_boost
-    exp_a = xa90_eff * mf * atk_mult * xpts_boost
+    exp_g = xg90_eff * mf * atk_mult
+    exp_a = xa90_eff * mf * atk_mult
     pts_g = exp_g * GOAL_PTS.get(poz, 4.0)
     pts_a = exp_a * 3.0
 
-    # 4. Czyste konto (czysty Poisson) i 5. Kara za stracone gole (-1 za każde 2)
+    # 4. Czyste konto (iloczynowy model Poissona) i 5. Kara za stracone gole (-1 za każde 2)
     ha_def = 0.85 if ha == "H" else 1.15
-    lam_gc = max(0.25, ((xgc90_team + opp_xg90) / 2.0) * ha_def)
+    lam_gc = max(0.25, ((xgc90_team * opp_xg90) / max(med_xg90, 0.5)) * ha_def)
     cs_prob = math.exp(-lam_gc)
     cs_val = 4.0 if poz in ('GKP', 'DEF') else (1.0 if poz == 'MID' else 0.0)
     pts_cs = cs_prob * p_60 * cs_val
     pts_gc = -expected_gc_penalty(lam_gc) * mf if poz in ('GKP', 'DEF') else 0.0
 
-    # 6. DefCon (CBIT >=10 dla DEF, CBIRT >=12 dla MID/FWD -> +2 pkt)
+    # 6. DefCon (warunkowo przy pełnym występie mf_play, a dopiero wynik * avail)
     if poz in ('DEF', 'MID', 'FWD'):
         def_work_mult = max(0.85, min(1.15, ((opp_xg90 / max(med_xg90, 0.5)) ** 0.5) * (0.95 if ha == "H" else 1.05)))
-        lam_dc = defcon90_eff * mf * def_work_mult
-        pts_dc = poisson_tail(10 if poz == 'DEF' else 12, lam_dc) * 2.0
+        lam_dc = defcon90_eff * mf_play * def_work_mult
+        pts_dc = poisson_tail(10 if poz == 'DEF' else 12, lam_dc) * 2.0 * avail
     else:
         pts_dc = 0.0
 
-    # 7. Obrony bramkarza (+1 pkt za każde 3 obrony)
+    # 7. Obrony bramkarza (warunkowo przy pełnym występie mf_play, a dopiero wynik * avail)
     if poz == 'GKP':
         save_mult = max(0.75, min(1.35, (opp_xg90 / max(med_xg90, 0.5)) * (0.92 if ha == "H" else 1.08)))
-        pts_sv = expected_saves_pts(saves90_eff * mf * save_mult)
+        pts_sv = expected_saves_pts(saves90_eff * mf_play * save_mult) * avail
     else:
         pts_sv = 0.0
 
@@ -570,6 +578,52 @@ def get_scenario_for_opp(opp):
     desc, old_b, xpts_b = scenariusz_map.get(szyfr, ("Brak danych", 1.0, 1.0))
     return szyfr, desc, old_b, xpts_b
 
+gw_date_map = {g['gw']: g['date'] for g in gw_meta}
+
+def parse_return_date(news_str, ref_date_iso):
+    if not news_str:
+        return None
+    low = news_str.lower()
+    if "unknown return date" in low:
+        return "UNKNOWN"
+    m = re.search(r'(?:expected back|until)\s+(\d{1,2})\s+([a-z]{3})', low)
+    if not m:
+        return None
+    mon_map = {
+        'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+        'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+    }
+    mon = mon_map.get(m.group(2))
+    if not mon:
+        return None
+    try:
+        ref_dt = datetime.strptime(ref_date_iso[:10], "%Y-%m-%d")
+        yr = ref_dt.year
+        if ref_dt.month >= 8 and mon <= 6:
+            yr += 1
+        elif ref_dt.month <= 6 and mon >= 8:
+            yr -= 1
+        return datetime(yr, mon, int(m.group(1))).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+def calc_gw_avail(status_p, chance_p, ret_date, gw_num):
+    if status_p == 'u':
+        return 0.0
+    if gw_num == next_gw_num:
+        return chance_p / 100.0
+    gw_dt = gw_date_map.get(gw_num, '')
+    if status_p == 's':
+        if ret_date and ret_date != "UNKNOWN" and gw_dt and gw_dt < ret_date:
+            return 0.0
+        return 1.0
+    if status_p in ('i', 'n') and chance_p == 0:
+        if ret_date == "UNKNOWN":
+            return 0.0
+        if ret_date and gw_dt and gw_dt < ret_date:
+            return 0.0
+    return 1.0
+
 kokpit_rows = []
 planer_xpts_map = {}
 
@@ -582,6 +636,9 @@ for _, p in df_p.iterrows():
 
     minuty = float(p['min'])
     min_l5 = float(p['min_l5'])
+    played_l5 = int(p['played_l5'])
+    last_min = int(p['last_min'])
+    apps_p = int(p['apps'])
     club_m = max(float(team_to_matches.get(klub, 1.0)), 1.0)
     sr_min = min(90.0, minuty / club_m)
     sr_min_l5 = min(90.0, min_l5 / l5_denom) if l5_gws else sr_min
@@ -589,25 +646,34 @@ for _, p in df_p.iterrows():
     status_p = str(p['status'])
     chance_p = int(p['chance'])
     news_p = str(p['news'])
+    ret_date = parse_return_date(news_p, updated_at[:10])
 
-    # Oczekiwane bazowe minuty (40% sezon + 60% L5)
+    # Oczekiwane bazowe minuty: zdrowy starter wracający po pauzie nie traci za zera w L5
     if status_p == 'u':
         x_mins_base = 0.0
-    elif l5_gws:
-        x_mins_base = min(90.0, max(0.0, 0.40 * sr_min + 0.60 * sr_min_l5))
-    else:
+    elif not l5_gws:
         x_mins_base = sr_min
+    elif chance_p >= 75 and last_min >= 60 and played_l5 > 0:
+        sr_played_l5 = min(90.0, min_l5 / float(played_l5))
+        sr_starts = min(90.0, minuty / max(float(apps_p), 1.0)) if apps_p > 0 else sr_played_l5
+        base_active = 0.35 * sr_starts + 0.65 * sr_played_l5
+        trust = min(1.0, max(float(apps_p), float(played_l5)) / 3.0)
+        x_mins_base = min(90.0, max(0.0, trust * base_active + (1.0 - trust) * (0.40 * sr_min + 0.60 * sr_min_l5)))
+    else:
+        x_mins_base = min(90.0, max(0.0, 0.40 * sr_min + 0.60 * sr_min_l5))
 
-    # Stabilizowane wskaźniki (shrinkage + miks 70/30 sezon/L5 dla ataku)
+    # Stabilizowane wskaźniki (shrinkage na sezonie oraz na L5)
     pr = pos_priors[poz]
     xg90_stab = (float(p['xG']) + pr['xg'] * (PRIOR_ATK / 90.0)) / ((minuty + PRIOR_ATK) / 90.0)
     xa90_stab = (float(p['xA']) + pr['xa'] * (PRIOR_ATK / 90.0)) / ((minuty + PRIOR_ATK) / 90.0)
     xg_l5 = float(p['xg_l5'])
     xa_l5 = float(p['xa_l5'])
     if l5_gws and min_l5 > 0:
-        w_l5 = 0.30 * min(1.0, min_l5 / 180.0)
-        xg90_eff = (1.0 - w_l5) * xg90_stab + w_l5 * ((xg_l5 / min_l5) * 90.0)
-        xa90_eff = (1.0 - w_l5) * xa90_stab + w_l5 * ((xa_l5 / min_l5) * 90.0)
+        xg90_l5_stab = (xg_l5 + xg90_stab * (180.0 / 90.0)) / ((min_l5 + 180.0) / 90.0)
+        xa90_l5_stab = (xa_l5 + xa90_stab * (180.0 / 90.0)) / ((min_l5 + 180.0) / 90.0)
+        w_l5 = 0.25 * min(1.0, min_l5 / 270.0)
+        xg90_eff = (1.0 - w_l5) * xg90_stab + w_l5 * xg90_l5_stab
+        xa90_eff = (1.0 - w_l5) * xa90_stab + w_l5 * xa90_l5_stab
     else:
         xg90_eff, xa90_eff = xg90_stab, xa90_stab
 
@@ -619,23 +685,21 @@ for _, p in df_p.iterrows():
 
     xgc90_team = team_to_xga.get(klub, med_npxgc90) / club_m
 
-    # Oblicz prognozę xPts dla wszystkich 12 kolejek Planera (w tym 6 pierwszych dla Kokpitu)
+    # Oblicz prognozę xPts dla wszystkich 12 kolejek Planera (z datami powrotu po kontuzjach)
     gw_xpts_dict = {}
     gw_details = {}
     for gw_num in planer_gws:
         fx = team_fixtures.get(klub, {}).get(gw_num, {'text': '', 'opp': '', 'ha': '', 'fdr_atk': 0, 'fdr_def': 0, 'matches': []})
-        is_gw1 = (gw_num == next_gw_num)
-        avail = (chance_p / 100.0) if is_gw1 else (0.0 if status_p == 'u' else 1.0)
+        avail = calc_gw_avail(status_p, chance_p, ret_date, gw_num)
 
         tot_brk = [0.0] * 9
         cs_list = []
         xgc_sum = 0.0
         if fx['matches']:
             for o, h in fx['matches']:
-                _, _, _, xpts_b = get_scenario_for_opp(o) if is_gw1 else ("", "", 1.0, 1.0)
                 m_brk, m_cs, m_xgc = calc_match_xpts(
                     poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, saves90_eff,
-                    bonus90_eff, yc90_eff, rc90_eff, xgc90_team, o, h, xpts_b if is_gw1 else 1.0
+                    bonus90_eff, yc90_eff, rc90_eff, xgc90_team, o, h
                 )
                 for k_i in range(9):
                     tot_brk[k_i] += m_brk[k_i]
@@ -657,8 +721,8 @@ for _, p in df_p.iterrows():
         'gws': gw_xpts_dict
     }
 
-    # Filtr wejściowy do Kokpitu (>=50 min średnio w sezonie LUB w ostatnich 5 GW)
-    if minuty <= 0 or (sr_min < 50.0 and sr_min_l5 < 50.0):
+    # Filtr wejściowy do Kokpitu (>=50 min średnio w sezonie, w L5 LUB powrót >=60 min w ostatniej kolejce)
+    if minuty <= 0 or (sr_min < 50.0 and sr_min_l5 < 50.0 and last_min < 60):
         continue
 
     posiadanie = float(p['Posiadanie'])
@@ -1426,7 +1490,7 @@ const TIPS = {{
   K_XPTS_6GW: {{ title: 'xPts 6GW (Suma punktów za 6 kolejek)', body: 'Realna <b>suma przewidywanych punktów FPL</b> w najbliższych 6 kolejkach (uwzględnia DGW i BLANKI; flaga kontuzji tnie tylko najbliższą GW, żeby jednomeczowe zawieszenie nie usuwało gracza z radaru).<span class="tip-muted">Najedź na liczbę, aby zobaczyć rozbicie po każdej kolejce!</span>' }},
   K_XPTS_VAL: {{ title: 'xPts/£ (Wartość za milion)', body: 'Stosunek <b>xPts 6GW ÷ Cena</b>. Pozwala błyskawicznie znaleźć najlepsze tanie opcje (np. obrońców za £4.5m z wysokim DefCon).' }},
   K_RADAR: {{ title: 'Radar (Dynamiczne progi)', body: 'Klasyfikacja oparta na realnym rozkładzie <b>xPts 6GW</b> osobno w ramach każdej pozycji: top 20% = 🛒 Priorytet Kupna, środek = ✅ Dobra Opcja, dół 35% = ❌ Pozbądź się.' }},
-  K_SCEN: {{ title: 'Przewidywany Scenariusz (GW+1)', body: 'Profil taktyczny najbliższego rywala (PPDA i xGA/90 vs mediana ligi). Nakłada delikatny mnożnik do ataku w GW+1: 🎁 Samobójczy Pressing (×1.15), 🎪 Chłopcy do bicia (×1.12), 🚧 Elitarny Pressing (×0.90), 🧱 Elitarny Autobus (×0.88).' }},
+  K_SCEN: {{ title: 'Przewidywany Scenariusz (GW+1)', body: 'Podglądowy profil taktyczny najbliższego rywala na podstawie jego pressingu (PPDA) i szczelności obrony (xGA/90) względem mediany ligi. Nie nakłada już podwójnego mnożnika na xPts, bo siła defensywy rywala jest bezpośrednio uwzględniona w silniku.' }},
 
   // Zakładka 5: Skaner
   S_FH_SC: {{ title: 'Skaner Free Hit (Wynik 1 GW)', body: 'Suma siły ofensywnej 5 najlepszych klubów w tej kolejce (z Tabeli Chipów niżej).' }},
@@ -2532,7 +2596,9 @@ function autoPickBenchForGw() {{
   const active = getActivePlayersForGw(gw).map(p => {{
     const xpObj = getPlayerGwXptsObj(p.player, gw);
     const isSlup = p.status_planer === '🪵 Słup';
-    const effScore = isSlup ? (xpObj.t - 10.0) : xpObj.t;
+    let effScore = xpObj.t;
+    if (xpObj.t <= 0.05) effScore = -100.0;
+    else if (isSlup) effScore = xpObj.t - 2.0;
     return {{ ...p, xp: xpObj.t, effScore }};
   }});
 
