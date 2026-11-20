@@ -290,7 +290,13 @@ df_clubs['Taktyczne xGC90'] = df_clubs.apply(calc_takt_xgc90, axis=1)
 df_clubs['xGD'] = (df_clubs['NPxG'] - df_clubs['NPxGA']) / m_denom
 
 def calc_fdr_overall(r):
-    mod_ppda = 0.5 if r['PPDA'] < med_ppda else (-0.5 if r['PPDA'] > 15 else 0.0)
+    xga_m = r['NPxGA'] / max(float(r['matches']), 1.0)
+    if r['PPDA'] < med_ppda and xga_m <= med_npxgc90:
+        mod_ppda = 0.15
+    elif r['PPDA'] > 15 and xga_m > med_npxgc90:
+        mod_ppda = -0.15
+    else:
+        mod_ppda = 0.0
     sila = r['xGD'] + mod_ppda
     if sila >= med_npxgc90 * 0.8: return 5
     elif sila >= med_npxgc90 * 0.4: return 4
@@ -540,7 +546,7 @@ def calc_match_xpts(poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, s
     cs_prob = math.exp(-lam_gc)
     cs_val = 4.0 if poz in ('GKP', 'DEF') else (1.0 if poz == 'MID' else 0.0)
     pts_cs = cs_prob * p_60 * cs_val
-    pts_gc = -expected_gc_penalty(lam_gc) * mf if poz in ('GKP', 'DEF') else 0.0
+    pts_gc = -expected_gc_penalty(lam_gc * mf_play) * avail if poz in ('GKP', 'DEF') else 0.0
 
     # 6. DefCon (warunkowo przy pełnym występie mf_play, a dopiero wynik * avail)
     if poz in ('DEF', 'MID', 'FWD'):
@@ -659,6 +665,9 @@ for _, p in df_p.iterrows():
         base_active = 0.35 * sr_starts + 0.65 * sr_played_l5
         trust = min(1.0, max(float(apps_p), float(played_l5)) / 3.0)
         x_mins_base = min(90.0, max(0.0, trust * base_active + (1.0 - trust) * (0.40 * sr_min + 0.60 * sr_min_l5)))
+    elif chance_p == 100 and last_min == 0 and played_l5 >= 2 and apps_p >= max(3, int(club_m * 0.6)):
+        sr_starts = min(90.0, minuty / max(float(apps_p), 1.0))
+        x_mins_base = min(90.0, max(0.0, 0.55 * sr_starts + 0.45 * (0.40 * sr_min + 0.60 * sr_min_l5)))
     else:
         x_mins_base = min(90.0, max(0.0, 0.40 * sr_min + 0.60 * sr_min_l5))
 
@@ -1438,7 +1447,7 @@ const defaultTargets = {json_def_targets};
 const TIPS = {{
   TOP_L5: {{
     title: 'Okno formy (L5)',
-    body: 'Ostatnie 5 zakończonych kolejek. Silnik xPts łączy sezon z L5 w proporcji <b>70/30</b> dla ataku (xG/xA) oraz <b>40/60</b> dla przewidywanych minut (xMins).'
+    body: 'Ostatnie 5 zakończonych kolejek. Silnik xPts łączy ustabilizowany sezon z formą L5 (waga L5 do maks. <b>25%</b> po stabilizacji małej próbki) oraz uwzględnia powroty starterów w xMins.'
   }},
   TOP_XGC: {{
     title: 'Ligowa mediana xGC/90',
@@ -1473,7 +1482,7 @@ const TIPS = {{
   FDR_DEF: {{ title: 'Trudność dla Obrony (DEF / GKP)', body: 'Trudność meczu dla Twoich obrońców i bramkarzy na podstawie siły ataku rywala (NPxG/mecz). <b>Im wyższa (1–5), tym trudniej o czyste konto.</b>' }},
 
   // Zakładka 4: Kokpit
-  K_XMINS: {{ title: 'xMins (Przewidywane minuty)', body: 'Oczekiwana liczba minut na mecz wyliczona z sezonu (<b>40%</b>) i ostatnich 5 kolejek (<b>60%</b>). Służy do wyliczenia szans na 1 pkt za grę, 2 pkt za ≥60 min oraz skalowania statystyk.' }},
+  K_XMINS: {{ title: 'xMins (Przewidywane minuty)', body: 'Oczekiwana liczba minut na mecz (miks sezonu i L5 z ochroną pewniaków wracających po krótkiej pauzie). Wyznacza szanse na 1 pkt za grę, 2 pkt za ≥60 min oraz skaluje statystyki.' }},
   K_XGI90: {{ title: 'xGI90 (Sezon)', body: 'Oczekiwany udział przy golach (<b>xG + xA</b>) na 90 minut za cały sezon.' }},
   K_DEFCON90: {{ title: 'DefCon/90', body: 'Średnia akcji defensywnych na 90 minut. Zielone podświetlenie oznacza graczy regularnie dobijających do progu <b>+2 pkt</b> (<b>≥10</b> dla DEF, <b>≥12</b> dla MID/FWD).' }},
   K_MIN_L5: {{ title: 'Min L5 (Minuty z 5 GW)', body: 'Suma minut z ostatnich 5 kolejek (maks. 450). Żółte tło (<b>&lt; 175 min</b>) ostrzega przed rotacją lub urazem.' }},
@@ -1482,12 +1491,12 @@ const TIPS = {{
   K_XGC_TEAM: {{ title: 'xGC/90 Drużyny', body: 'Średnie oczekiwane bramki tracone przez całą drużynę na mecz. Im niżej, tym szczelniejsza defensywa.' }},
   K_W1: {{ title: 'Werdykt (Atak)', body: 'Ocena czysto ofensywna na bazie xGI90 (pomaga wyłapać również ofensywnych obrońców).' }},
   K_OBR: {{ title: 'Ocena obrony', body: '🛡️ Mur przy xGC/90 ≤ 1.30, powyżej ⚠️ Dziurawi.' }},
-  K_CS: {{ title: 'Szansa na CS (Poisson)', body: 'Prawdopodobieństwo czystego konta w najbliższej kolejce z czystego rozkładu Poissona (xGA/90 klubu + xG/90 rywala z korektą dom/wyjazd).' }},
+  K_CS: {{ title: 'Szansa na CS (Poisson)', body: 'Prawdopodobieństwo czystego konta w najbliższej kolejce z iloczynowego rozkładu Poissona: (xGA/90 klubu × xG/90 rywala ÷ mediana ligi) z korektą dom/wyjazd.' }},
   K_XPTS_GW: {{ title: 'xPts GW (Pełna prognoza na najbliższą kolejkę)', body: 'Kompletna prognoza punktów FPL obejmująca <b>8 składników</b>: Występ (xMins + flaga kontuzji), Gole, Asysty, CS (także +1 dla MID), kary za 2+ stracone gole, <b>DefCon</b> (Poisson), <b>Obrony</b> (GKP), <b>Bonus</b> i Kartki.<span class="tip-muted">Najedź na dowolną liczbę w tej kolumnie, aby zobaczyć pełny paragon punktowy!</span>' }},
   K_W2: {{ title: 'Werdykt (Poz)', body: 'Szybka ocena dopasowana do pozycji: dla DEF/GKP patrzy na obronę zespołu, dla MID/FWD na xGI90.' }},
   K_EO: {{ title: 'Status EO (Posiadanie)', body: '🗡️ Super Diff (poniżej 10% posiadania) vs 🛡️ Szablon (od 10% w górę).' }},
   K_GC_OPP: {{ title: 'GC Rywala (H/A)', body: 'Oczekiwane bramki tracone na mecz przez najbliższego rywala, <b>już skorygowane o boisko</b> (×1.15 u siebie, ×0.85 na wyjeździe).' }},
-  K_XPTS_6GW: {{ title: 'xPts 6GW (Suma punktów za 6 kolejek)', body: 'Realna <b>suma przewidywanych punktów FPL</b> w najbliższych 6 kolejkach (uwzględnia DGW i BLANKI; flaga kontuzji tnie tylko najbliższą GW, żeby jednomeczowe zawieszenie nie usuwało gracza z radaru).<span class="tip-muted">Najedź na liczbę, aby zobaczyć rozbicie po każdej kolejce!</span>' }},
+  K_XPTS_6GW: {{ title: 'xPts 6GW (Suma punktów za 6 kolejek)', body: 'Realna <b>suma przewidywanych punktów FPL</b> w najbliższych 6 kolejkach (uwzględnia DGW, BLANKI oraz daty powrotu po kontuzjach z komunikatów FPL API).<span class="tip-muted">Najedź na liczbę, aby zobaczyć rozbicie po każdej kolejce!</span>' }},
   K_XPTS_VAL: {{ title: 'xPts/£ (Wartość za milion)', body: 'Stosunek <b>xPts 6GW ÷ Cena</b>. Pozwala błyskawicznie znaleźć najlepsze tanie opcje (np. obrońców za £4.5m z wysokim DefCon).' }},
   K_RADAR: {{ title: 'Radar (Dynamiczne progi)', body: 'Klasyfikacja oparta na realnym rozkładzie <b>xPts 6GW</b> osobno w ramach każdej pozycji: top 20% = 🛒 Priorytet Kupna, środek = ✅ Dobra Opcja, dół 35% = ❌ Pozbądź się.' }},
   K_SCEN: {{ title: 'Przewidywany Scenariusz (GW+1)', body: 'Podglądowy profil taktyczny najbliższego rywala na podstawie jego pressingu (PPDA) i szczelności obrony (xGA/90) względem mediany ligi. Nie nakłada już podwójnego mnożnika na xPts, bo siła defensywy rywala jest bezpośrednio uwzględniona w silniku.' }},
@@ -2012,7 +2021,6 @@ function renderKokpit() {{
   cols.push({{ k: 'Status_Min', lbl: 'Status minutowy', cls: 'text-left' }});
   if (showTech) cols.push({{ k: 'Szyfr', lbl: 'Szyfr', cls: 'text-center' }});
   cols.push({{ k: 'Scenariusz', lbl: `Przewidywany Scenariusz (${{rollingGWs[0]}})`, isScen: true, tip: 'K_SCEN' }});
-  if (showTech) cols.push({{ k: 'Booster', lbl: 'Booster' }});
 
   let html = '<thead><tr><th>#</th>' + cols.map(c => {{
     const sticky = c.k === 'Zawodnik' ? 'sticky-col' : '';
