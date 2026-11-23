@@ -763,7 +763,6 @@ for _, p in df_p.iterrows():
         gw_details[gw_num] = {
             'fx': fx, 'tot': gw_tot, 'brk': brk_round, 'cs': cs_gw, 'xgc': xgc_sum, 'sd': gw_sd
         }
-        }
 
     xpts_6gw_sum = sum(gw_details[g]['tot'] for g in rolling_gws if g in gw_details)
     planer_xpts_map[zaw] = {
