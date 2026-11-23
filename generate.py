@@ -211,8 +211,12 @@ def resolve_official_name(name):
 print("3/5 Przeliczanie Tabeli Premier League, Median i wskaźników FDR...")
 
 ppda_baza = pobierz_ppda_oppda()
+is_fin = (fixtures_df['finished'] == True)
+if 'finished_provisional' in fixtures_df.columns:
+    is_fin = is_fin | (fixtures_df['finished_provisional'] == True)
+
 finished_fix = fixtures_df[
-    (fixtures_df['finished'] == True) &
+    is_fin &
     (fixtures_df['team_h_score'].notna()) &
     (fixtures_df['team_a_score'].notna())
 ].copy()
