@@ -84,30 +84,64 @@ else:
 # POBIERANIE FORMY Z OSTATNICH 5 ZAKOŃCZONYCH KOLEJEK (L5)
 # ==============================================================================
 finished_gw_ids = sorted(events_df[events_df['finished'] == True]['id'].astype(int).tolist())
-l5_gws = finished_gw_ids[-5:] if finished_gw_ids else []
-l5_label = f"GW{l5_gws[0]}–GW{l5_gws[-1]}" if len(l5_gws) >= 2 else (f"GW{l5_gws[0]}" if l5_gws else "Brak")
-print(f"2/5 Pobieranie formy L5 ({l5_label} — {len(l5_gws)} kolejek)...")
+curr_ev_l5 = events_df[events_df['is_current'] == True]
+curr_gw_id = int(curr_ev_l5['id'].iloc[0]) if not curr_ev_l5.empty else None
 
-l5_stats = {}
-for gw_id in l5_gws:
+is_fin_l5 = (fixtures_df['finished'] == True)
+if 'finished_provisional' in fixtures_df.columns:
+    is_fin_l5 = is_fin_l5 | (fixtures_df['finished_provisional'] == True)
+
+teams_played_curr_gw = set()
+if curr_gw_id and curr_gw_id not in finished_gw_ids:
+    curr_fin_fix = fixtures_df[(fixtures_df['event'] == curr_gw_id) & is_fin_l5]
+    if not curr_fin_fix.empty:
+        teams_played_curr_gw = set(curr_fin_fix['team_h'].dropna().astype(int)).union(
+            set(curr_fin_fix['team_a'].dropna().astype(int))
+        )
+
+base_l5_gws = finished_gw_ids[-5:] if finished_gw_ids else []
+live_l5_gws = (finished_gw_ids + [curr_gw_id])[-5:] if teams_played_curr_gw else base_l5_gws
+fetch_l5_gws = sorted(set(base_l5_gws).union(set(live_l5_gws)))
+l5_gws = live_l5_gws
+
+if teams_played_curr_gw:
+    l5_label = f"GW{live_l5_gws[0]}–GW{live_l5_gws[-1]} (live)" if len(live_l5_gws) >= 2 else f"GW{live_l5_gws[0]} (live)"
+else:
+    l5_label = f"GW{base_l5_gws[0]}–GW{base_l5_gws[-1]}" if len(base_l5_gws) >= 2 else (f"GW{base_l5_gws[0]}" if base_l5_gws else "Brak")
+print(f"2/5 Pobieranie formy L5 ({l5_label} — {len(fetch_l5_gws)} kolejek z API)...")
+
+gw_live_raw = {}
+for gw_id in fetch_l5_gws:
+    gw_live_raw[gw_id] = {}
     try:
         r_live = requests.get(f"https://fantasy.premierleague.com/api/event/{gw_id}/live/", headers=headers, timeout=20)
         r_live.raise_for_status()
         for el in r_live.json().get('elements', []):
             eid = int(el['id'])
             st = el.get('stats', {})
-            if eid not in l5_stats:
-                l5_stats[eid] = {'min': 0, 'xg': 0.0, 'xa': 0.0, 'played': 0, 'last_min': 0}
-            m_gw = int(st.get('minutes', 0) or 0)
-            l5_stats[eid]['min'] += m_gw
-            l5_stats[eid]['xg'] += float(st.get('expected_goals', 0.0) or 0.0)
-            l5_stats[eid]['xa'] += float(st.get('expected_assists', 0.0) or 0.0)
-            if m_gw > 0:
-                l5_stats[eid]['played'] += 1
-            if gw_id == l5_gws[-1]:
-                l5_stats[eid]['last_min'] = m_gw
+            gw_live_raw[gw_id][eid] = (
+                int(st.get('minutes', 0) or 0),
+                float(st.get('expected_goals', 0.0) or 0.0),
+                float(st.get('expected_assists', 0.0) or 0.0),
+            )
     except Exception as e:
         print(f"Ostrzeżenie: nie udało się pobrać kolejki GW{gw_id} dla L5 ({e})")
+
+l5_stats = {}
+eid_to_tid = dict(zip(elements_df['id'].astype(int), elements_df['team'].astype(int)))
+for eid, tid in eid_to_tid.items():
+    p_gws = live_l5_gws if tid in teams_played_curr_gw else base_l5_gws
+    rec = {'min': 0, 'xg': 0.0, 'xa': 0.0, 'played': 0, 'last_min': 0}
+    for gw_id in p_gws:
+        m_gw, xg_gw, xa_gw = gw_live_raw.get(gw_id, {}).get(eid, (0, 0.0, 0.0))
+        rec['min'] += m_gw
+        rec['xg'] += xg_gw
+        rec['xa'] += xa_gw
+        if m_gw > 0:
+            rec['played'] += 1
+        if gw_id == p_gws[-1]:
+            rec['last_min'] = m_gw
+    l5_stats[eid] = rec
 
 # ==============================================================================
 # 1. TABELA PIŁKARZY (z DefCon, Saves, Bonus, BPS, Kartkami, Statusami i SFG)
