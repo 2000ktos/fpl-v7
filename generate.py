@@ -449,27 +449,31 @@ def poisson_tail(k_min, lam):
         cdf += term
     return max(0.0, min(1.0, 1.0 - cdf))
 
-def expected_gc_penalty(lam):
+def expected_gc_moments(lam):
     if lam <= 0.0:
-        return 0.0
-    ev = 0.0
+        return 0.0, 0.0
+    e1, e2 = 0.0, 0.0
     term = math.exp(-lam)
-    for k in range(1, 15):
+    for k in range(1, 16):
         term *= lam / k
         if k >= 2:
-            ev += (k // 2) * term
-    return ev
+            pen = k // 2
+            e1 += pen * term
+            e2 += (pen * pen) * term
+    return e1, e2
 
-def expected_saves_pts(lam):
+def expected_saves_moments(lam):
     if lam <= 0.0:
-        return 0.0
-    ev = 0.0
+        return 0.0, 0.0
+    e1, e2 = 0.0, 0.0
     term = math.exp(-lam)
-    for k in range(1, 22):
+    for k in range(1, 24):
         term *= lam / k
         if k >= 3:
-            ev += (k // 3) * term
-    return ev
+            pts = k // 3
+            e1 += pts * term
+            e2 += (pts * pts) * term
+    return e1, e2
 
 def mins_to_probs(xm):
     if xm <= 0.5:
@@ -521,7 +525,7 @@ scenariusz_map = {
 def calc_match_xpts(poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, saves90_eff,
                     bonus90_eff, yc90_eff, rc90_eff, xgc90_team, opp, ha, xpts_boost=1.0):
     if x_mins_base <= 0.1 or avail <= 0.0 or not opp:
-        return [0.0] * 9, 0.0, 0.0
+        return [0.0] * 9, 0.0, 0.0, 0.0, 0.0
 
     p_play_raw, p_60_raw = mins_to_probs(x_mins_base)
     p_play = p_play_raw * avail
@@ -539,9 +543,12 @@ def calc_match_xpts(poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, s
     atk_mult = max(0.45, min(1.80, opp_xga_ha / max(med_npxgc90, 0.5)))
 
     # 2. Gole i 3. Asysty
-    exp_g = xg90_eff * mf * atk_mult
-    exp_a = xa90_eff * mf * atk_mult
-    pts_g = exp_g * GOAL_PTS.get(poz, 4.0)
+    exp_g_cond = xg90_eff * mf_play * atk_mult
+    exp_a_cond = xa90_eff * mf_play * atk_mult
+    exp_g = exp_g_cond * avail
+    exp_a = exp_a_cond * avail
+    w_g = GOAL_PTS.get(poz, 4.0)
+    pts_g = exp_g * w_g
     pts_a = exp_a * 3.0
 
     # 4. Czyste konto (iloczynowy model Poissona) i 5. Kara za stracone gole (-1 za każde 2)
@@ -550,22 +557,25 @@ def calc_match_xpts(poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, s
     cs_prob = math.exp(-lam_gc)
     cs_val = 4.0 if poz in ('GKP', 'DEF') else (1.0 if poz == 'MID' else 0.0)
     pts_cs = cs_prob * p_60 * cs_val
-    pts_gc = -expected_gc_penalty(lam_gc * mf_play) * avail if poz in ('GKP', 'DEF') else 0.0
+    gc_e1, gc_e2 = expected_gc_moments(lam_gc * mf_play) if poz in ('GKP', 'DEF') else (0.0, 0.0)
+    pts_gc = -gc_e1 * avail
 
     # 6. DefCon (warunkowo przy pełnym występie mf_play, a dopiero wynik * avail)
     if poz in ('DEF', 'MID', 'FWD'):
         def_work_mult = max(0.85, min(1.15, ((opp_xg90 / max(med_xg90, 0.5)) ** 0.5) * (0.95 if ha == "H" else 1.05)))
         lam_dc = defcon90_eff * mf_play * def_work_mult
-        pts_dc = poisson_tail(10 if poz == 'DEF' else 12, lam_dc) * 2.0 * avail
+        p_dc = poisson_tail(10 if poz == 'DEF' else 12, lam_dc)
+        pts_dc = p_dc * 2.0 * avail
     else:
-        pts_dc = 0.0
+        p_dc, pts_dc = 0.0, 0.0
 
     # 7. Obrony bramkarza (warunkowo przy pełnym występie mf_play, a dopiero wynik * avail)
     if poz == 'GKP':
         save_mult = max(0.75, min(1.35, (opp_xg90 / max(med_xg90, 0.5)) * (0.92 if ha == "H" else 1.08)))
-        pts_sv = expected_saves_pts(saves90_eff * mf_play * save_mult) * avail
+        sv_e1, sv_e2 = expected_saves_moments(saves90_eff * mf_play * save_mult)
+        pts_sv = sv_e1 * avail
     else:
-        pts_sv = 0.0
+        sv_e1, sv_e2, pts_sv = 0.0, 0.0, 0.0
 
     # 8. Bonus (hybryda: dorobek w meczu + historyczny magnes na bonusy) i Kartki
     match_bon = (
@@ -577,7 +587,28 @@ def calc_match_xpts(poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, s
     pts_crd = -(yc90_eff * 1.0 + rc90_eff * 3.0) * mf
 
     brk = [pts_app, pts_g, pts_a, pts_cs, pts_gc, pts_dc, pts_sv, pts_bon, pts_crd]
-    return brk, cs_prob, opp_xga_ha
+    mean_cond = sum(brk) / avail
+
+    # Wariancja meczu (warunkowa przy występie + prawo całkowitej wariancji dla avail)
+    var_app = max(0.0, (p_play_raw + 3.0 * p_60_raw) - (p_play_raw + p_60_raw) ** 2)
+    var_g = ((w_g + 0.75) ** 2) * exp_g_cond
+    var_a = ((3.0 + 0.40) ** 2) * exp_a_cond
+    p_cs_eff = cs_prob * p_60_raw
+    cs_pay = cs_val + (0.45 if poz in ('GKP', 'DEF') else 0.0)
+    var_cs = (cs_pay ** 2) * p_cs_eff * (1.0 - p_cs_eff)
+    var_gc = max(0.0, gc_e2 - gc_e1 * gc_e1)
+    var_def_shared = var_cs + var_gc + 2.0 * (cs_pay * p_cs_eff) * gc_e1
+    var_dc = 4.0 * p_dc * (1.0 - p_dc)
+    var_sv = max(0.0, sv_e2 - sv_e1 * sv_e1)
+    bon_cond = pts_bon / avail
+    var_bon_resid = max(0.0, 0.55 * bon_cond * (2.2 - bon_cond))
+    var_crd = (yc90_eff * 1.0 + rc90_eff * 9.0) * mf_play
+
+    var_cond = var_app + var_g + var_a + var_def_shared + var_dc + var_sv + var_bon_resid + var_crd
+    var_tot = avail * var_cond + avail * (1.0 - avail) * (mean_cond ** 2)
+    cs_sd = math.sqrt(max(0.0, var_def_shared)) * avail if poz in ('GKP', 'DEF', 'MID') else 0.0
+
+    return brk, cs_prob, opp_xga_ha, var_tot, cs_sd
 
 def get_scenario_for_opp(opp):
     if not opp:
@@ -706,25 +737,32 @@ for _, p in df_p.iterrows():
         avail = calc_gw_avail(status_p, chance_p, ret_date, gw_num)
 
         tot_brk = [0.0] * 9
+        tot_var = 0.0
+        tot_cs_var = 0.0
         cs_list = []
         xgc_sum = 0.0
         if fx['matches']:
             for o, h in fx['matches']:
-                m_brk, m_cs, m_xgc = calc_match_xpts(
+                m_brk, m_cs, m_xgc, m_var, m_cs_sd = calc_match_xpts(
                     poz, x_mins_base, avail, xg90_eff, xa90_eff, defcon90_eff, saves90_eff,
                     bonus90_eff, yc90_eff, rc90_eff, xgc90_team, o, h
                 )
                 for k_i in range(9):
                     tot_brk[k_i] += m_brk[k_i]
+                tot_var += m_var
+                tot_cs_var += m_cs_sd * m_cs_sd
                 cs_list.append(m_cs)
                 xgc_sum += m_xgc
 
         gw_tot = sum(tot_brk)
         cs_gw = (1.0 - float(np.prod([1.0 - c for c in cs_list]))) if cs_list else 0.0
         brk_round = [round(v, 2) for v in tot_brk]
-        gw_xpts_dict[str(gw_num)] = {'t': round(gw_tot, 2), 'b': brk_round}
+        gw_sd = round(math.sqrt(max(0.0, tot_var)), 2)
+        gw_cs_sd = round(math.sqrt(max(0.0, tot_cs_var)), 2)
+        gw_xpts_dict[str(gw_num)] = {'t': round(gw_tot, 2), 'b': brk_round, 'v': round(tot_var, 2), 'cv': gw_cs_sd}
         gw_details[gw_num] = {
-            'fx': fx, 'tot': gw_tot, 'brk': brk_round, 'cs': cs_gw, 'xgc': xgc_sum
+            'fx': fx, 'tot': gw_tot, 'brk': brk_round, 'cs': cs_gw, 'xgc': xgc_sum, 'sd': gw_sd
+        }
         }
 
     xpts_6gw_sum = sum(gw_details[g]['tot'] for g in rolling_gws if g in gw_details)
@@ -807,7 +845,7 @@ for _, p in df_p.iterrows():
         'Trend_Code': trend_code, 'Trend_Icon': trend_icon,
         'xGC90_Team': round(xgc90_team, 2), 'Werdykt1': w1,
         'Ocena_Obrony': ocena_obr, 'Szansa_CS': round(szansa_cs * 100, 1),
-        'xPts_GW': xpts_gw1, 'xPts_GW_Brk': brk1,
+        'xPts_GW': xpts_gw1, 'xPts_GW_Brk': brk1, 'xPts_GW_SD': round(gd1.get('sd', 0.0), 2),
         'xPts_Atk1': round(brk1[1] + brk1[2], 2),
         'xPts_Def1': round(brk1[3] + brk1[4] + brk1[6], 2),
         'xPts_DC1': round(brk1[5], 2),
@@ -1214,6 +1252,7 @@ html_app = f"""<!DOCTYPE html>
   .val-err {{ color: #b00020; font-weight: 700; }}
   .val-xpts {{ background: #d6eaf8; color: #0b4a7d; padding: 3px 9px; border-radius: 4px; font-weight: 700; }}
   .val-cap {{ background: #fef3c7; color: #92400e; padding: 3px 9px; border-radius: 4px; font-weight: 700; }}
+  .val-rng {{ background: #ede9fe; color: #5b21b6; padding: 3px 9px; border-radius: 4px; font-weight: 700; cursor: help; }}
 
   .bottom-tabs {{
     background: #e1dfdd; border-top: 1px solid #c8c6c4; display: flex; align-items: center;
@@ -1614,7 +1653,27 @@ function statusDotHtml(status, chance, news) {{
   return `<span class="st-dot ${{cls}}" data-tip-html="${{html}}" onclick="event.stopPropagation(); toggleInlineTip(this)" onmouseenter="showInlineTip(this)" onmouseleave="hideTip()"></span>`;
 }}
 
-function buildXptsReceiptHtml(brk, title, total, extraNote) {{
+function calcSingleRange(mu, sd) {{
+  if (mu <= 0.05 || sd <= 0.05) return {{ lo: Math.max(0, mu), hi: Math.max(0, mu) }};
+  return {{
+    lo: Math.max(0, mu - 0.75 * sd),
+    hi: mu + 0.85 * sd
+  }};
+}}
+
+function calcTeamRange(mu, sd) {{
+  if (mu <= 0.5 || sd <= 0.05) return {{ lo: Math.max(0, mu), hi: Math.max(0, mu) }};
+  const cv2 = Math.pow(sd / mu, 2);
+  const sig = Math.sqrt(Math.log(1 + cv2));
+  const muLn = Math.log(mu) - 0.5 * sig * sig;
+  const z = 0.84162;
+  return {{
+    lo: Math.max(0, Math.exp(muLn - z * sig)),
+    hi: Math.max(mu, Math.exp(muLn + z * sig))
+  }};
+}}
+
+function buildXptsReceiptHtml(brk, title, total, extraNote, sdVal) {{
   const labels = [
     ['Występ (xMins)', brk[0]],
     ['Gole (xG)', brk[1]],
@@ -1634,8 +1693,13 @@ function buildXptsReceiptHtml(brk, title, total, extraNote) {{
     rows += `<div>${{lbl}}</div><div class="tip-val ${{vCls}}">${{sign}}${{val.toFixed(2)}}</div>`;
   }});
   if (!rows) rows = `<div>Brak punktów (BLANK / 0% szans)</div><div class="tip-val">0.00</div>`;
+  let rangeHtml = '';
+  if (sdVal && sdVal > 0.05 && total > 0.05) {{
+    const rng = calcSingleRange(Number(total), Number(sdVal));
+    rangeHtml = `<div style="margin-top:4px; font-size:11.5px; color:#cbd5e1; display:flex; justify-content:space-between; gap:10px;"><span>📉 Podłoga / 📈 Sufit (P20–P80):</span><b style="color:#fde68a;">${{rng.lo.toFixed(1)}} – ${{rng.hi.toFixed(1)}} pkt</b></div><div style="font-size:11px; color:#94a3b8; text-align:right;">Odchylenie std (σ): ±${{Number(sdVal).toFixed(2)}} pkt</div>`;
+  }}
   const noteHtml = extraNote ? `<span class="tip-muted">${{escHtml(extraNote)}}</span>` : '';
-  return `<div class="tip-title">${{escHtml(title)}}</div><div class="tip-grid">${{rows}}</div><div class="tip-total"><span>Razem xPts</span><span>${{Number(total).toFixed(2)}} pkt</span></div>${{noteHtml}}`;
+  return `<div class="tip-title">${{escHtml(title)}}</div><div class="tip-grid">${{rows}}</div><div class="tip-total"><span>Razem xPts</span><span>${{Number(total).toFixed(2)}} pkt</span></div>${{rangeHtml}}${{noteHtml}}`;
 }}
 
 function buildXpts6Html(list, playerName, total) {{
@@ -2052,7 +2116,7 @@ function renderKokpit() {{
         html += `<td class="${{c.cls}}">${{dot}}${{escHtml(r.Zawodnik)}}${{mine}}${{penTag}}${{spTag}}${{inBtn}}</td>`;
       }} else if (c.isXpts1) {{
         const note = r.chance < 100 ? `Uwzględniono flagę dostępności: ${{r.chance}}%` : `xMins bazowe: ${{r.xMins}} min`;
-        const tipHtml = encodeURIComponent(buildXptsReceiptHtml(r.xPts_GW_Brk, `${{r.Zawodnik}} — ${{rollingGWs[0]}} (${{r.m1.text || 'BLANK'}})`, r.xPts_GW, note));
+        const tipHtml = encodeURIComponent(buildXptsReceiptHtml(r.xPts_GW_Brk, `${{r.Zawodnik}} — ${{rollingGWs[0]}} (${{r.m1.text || 'BLANK'}})`, r.xPts_GW, note, r.xPts_GW_SD));
         html += `<td class="xpts-cell" data-tip-html="${{tipHtml}}" onclick="event.stopPropagation(); toggleInlineTip(this)" onmouseenter="showInlineTip(this)" onmouseleave="hideTip()">${{r.xPts_GW.toFixed(2)}}</td>`;
       }} else if (c.isXpts6) {{
         const tipHtml = encodeURIComponent(buildXpts6Html(r.xPts_6_List, r.Zawodnik, r.xPts_6GW));
@@ -2136,8 +2200,8 @@ function renderScanner() {{
 // ============================================================================
 function getPlayerGwXptsObj(playerName, gw) {{
   const rec = planerXptsMap[playerName];
-  if (!rec || !rec.gws) return {{ t: 0.0, b: [0,0,0,0,0,0,0,0,0] }};
-  return rec.gws[String(gw)] || {{ t: 0.0, b: [0,0,0,0,0,0,0,0,0] }};
+  if (!rec || !rec.gws) return {{ t: 0.0, b: [0,0,0,0,0,0,0,0,0], v: 0.0, cv: 0.0 }};
+  return rec.gws[String(gw)] || {{ t: 0.0, b: [0,0,0,0,0,0,0,0,0], v: 0.0, cv: 0.0 }};
 }}
 
 function getPlayer6GwXpts(playerName) {{
@@ -2668,7 +2732,7 @@ function renderLineupTables() {{
   activePlayers.forEach(p => {{
     const fx = getPosFixture(p.team_short, p.Pozycja, selectedLineupGw);
     const xpObj = getPlayerGwXptsObj(p.player, selectedLineupGw);
-    const item = {{ ...p, fx, xp: xpObj.t, brk: xpObj.b }};
+    const item = {{ ...p, fx, xp: xpObj.t, brk: xpObj.b, v: xpObj.v || 0, cv: xpObj.cv || 0 }};
     if (isBenchInGw(p.player, selectedLineupGw)) bench.push(item);
     else xi.push(item);
   }});
@@ -2691,7 +2755,7 @@ function renderLineupTables() {{
         const sepCls = (prevP !== null && prevP !== p.Pozycja) ? 'zone-border-top' : '';
         prevP = p.Pozycja;
         const note = (selectedLineupGw === nextGwNum && p.chance < 100) ? `Flaga dostępności: ${{p.chance}}%` : '';
-        const tipHtml = encodeURIComponent(buildXptsReceiptHtml(p.brk, `${{p.player}} — GW${{selectedLineupGw}} (${{p.fx.text}})`, p.xp, note));
+        const tipHtml = encodeURIComponent(buildXptsReceiptHtml(p.brk, `${{p.player}} — GW${{selectedLineupGw}} (${{p.fx.text}})`, p.xp, note, Math.sqrt(p.v || 0)));
         h += `<tr class="zone-${{p.Pozycja}} ${{sepCls}}">
           <td><b>${{p.Pozycja}}</b></td>
           <td class="text-left">${{dot}}${{inTag}}${{escHtml(p.player)}}${{capTag}}</td>
@@ -2721,6 +2785,24 @@ function renderLineupTables() {{
   const capTotal = xiXpts + (capPlayer ? capPlayer.xp : 0);
   const capLabel = capPlayer ? capPlayer.web_name : '—';
 
+  // Łączna wariancja XI z Kapitanem (4x dla C + korelacja CS/GC graczy z tego samego klubu)
+  let teamVarCap = 0.0;
+  for (let i = 0; i < xi.length; i++) {{
+    const pi = xi[i];
+    const mi = (capPlayer && pi.player === capPlayer.player) ? 2.0 : 1.0;
+    teamVarCap += (mi * mi) * (pi.v || 0);
+    for (let j = i + 1; j < xi.length; j++) {{
+      const pj = xi[j];
+      if (pi.team_short === pj.team_short && (pi.cv || 0) > 0 && (pj.cv || 0) > 0) {{
+        const mj = (capPlayer && pj.player === capPlayer.player) ? 2.0 : 1.0;
+        teamVarCap += 2.0 * mi * mj * pi.cv * pj.cv;
+      }}
+    }}
+  }}
+  const teamSdCap = Math.sqrt(Math.max(0, teamVarCap));
+  const teamRng = calcTeamRange(capTotal, teamSdCap);
+  const rngTip = `Korytarz P20–P80 (60% typowych kolejek) z uwzględnieniem kapitana (×4 do wariancji) i korelacji czystych kont z tego samego klubu. Odchylenie std (σ): ±${{teamSdCap.toFixed(1)}} pkt.`;
+
   const clubCounts = {{}};
   activePlayers.forEach(p => {{ clubCounts[p.team_short] = (clubCounts[p.team_short] || 0) + 1; }});
   const overClubs = Object.entries(clubCounts).filter(([k, v]) => v > 3).map(([k, v]) => `${{k}}(${{v}})`);
@@ -2736,6 +2818,7 @@ function renderLineupTables() {{
     <span>💰 Kadra: <b>£${{totalCost.toFixed(1)}}m</b></span>
     <span class="val-xpts">🎯 Prognoza XI (GW${{selectedLineupGw}}): ${{xiXpts.toFixed(1)}} pkt</span>
     <span class="val-cap">© z Kapitanem (${{escHtml(capLabel)}}): ${{capTotal.toFixed(1)}} pkt</span>
+    <span class="val-rng" title="${{escHtml(rngTip)}}">📉 ${{teamRng.lo.toFixed(0)}} – 📈 ${{teamRng.hi.toFixed(0)}} pkt (σ ±${{teamSdCap.toFixed(1)}})</span>
   `;
 }}
 
