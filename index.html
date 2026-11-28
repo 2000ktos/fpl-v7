@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FPL Plik</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root { --excel-green: #107c41; --excel-border: #d4d4d4; --bg-soft: #eef2f0; }
   * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -267,27 +266,6 @@
   }
   .sheet-tab.active { background: #ffffff; color: var(--excel-green); font-weight: 700; border-bottom: 3px solid var(--excel-green); }
   .sub-section { padding: 14px 16px 6px; font-weight: 700; color: #107c41; font-size: 14px; background: #f8f9fa; border-top: 2px solid #d4d4d4; }
-  .cloud-btn {
-    background: rgba(255,255,255,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.5);
-    border-radius: 4px; padding: 3px 10px; font-size: 12px; font-weight: 700; cursor: pointer;
-  }
-  .cloud-btn:hover { background: rgba(255,255,255,0.32); }
-  .cloud-btn.ok { background: #0b5d30; border-color: #86efac; }
-  .cloud-btn.syncing { background: #b45309; border-color: #fde68a; }
-  .cloud-btn.err { background: #991b1b; border-color: #fca5a5; }
-  #cloudModal {
-    display: none; position: fixed; inset: 0; z-index: 30000;
-    background: rgba(0,0,0,0.48); align-items: center; justify-content: center;
-  }
-  .cloud-box {
-    background: #fff; color: #222; width: 340px; max-width: 92vw; border-radius: 8px;
-    padding: 18px; box-shadow: 0 12px 30px rgba(0,0,0,0.3); font-size: 13px;
-  }
-  .cloud-box h3 { margin: 0 0 10px; color: #107c41; font-size: 15px; }
-  .cloud-box input {
-    width: 100%; padding: 8px 9px; margin-bottom: 8px; border: 1px solid #bbb;
-    border-radius: 4px; font-size: 13px;
-  }
 </style>
 </head>
 <body>
@@ -295,41 +273,15 @@
 <div id="fplTooltip"></div>
 <div id="playerDropdownMenu" onmousedown="event.preventDefault()"></div>
 <div id="planerToast"></div>
-<div id="cloudModal" onclick="if(event.target===this) closeCloudModal()">
-  <div class="cloud-box">
-    <h3>☁️ Synchronizacja Planera (Supabase)</h3>
-    <div id="cloudLoginBox">
-      <p style="margin:0 0 10px; color:#555; font-size:12px;">Zaloguj się raz na każdym urządzeniu, aby skład synchronizował się automatycznie.</p>
-      <input type="email" id="cloudEmail" placeholder="E-mail" autocomplete="username">
-      <input type="password" id="cloudPass" placeholder="Hasło" autocomplete="current-password" onkeydown="if(event.key==='Enter') cloudLogin()">
-      <div id="cloudMsg" style="font-size:12px; min-height:16px; margin-bottom:8px; color:#b00020;"></div>
-      <div style="display:flex; gap:8px; justify-content:flex-end;">
-        <button class="act-btn" onclick="closeCloudModal()">Anuluj</button>
-        <button class="act-btn primary" onclick="cloudLogin()">Zaloguj</button>
-      </div>
-    </div>
-    <div id="cloudAccountBox" style="display:none;">
-      <p style="margin:0 0 10px;">Zalogowano jako: <b id="cloudUserEmail"></b></p>
-      <div style="display:flex; flex-direction:column; gap:7px;">
-        <button class="act-btn" onclick="lastCloudUpdatedAt=null; pullCloudState(true); closeCloudModal();">⬇️ Pobierz skład z chmury</button>
-        <button class="act-btn primary" onclick="pushCloudState(true); closeCloudModal();">⬆️ Wyślij skład z tego urządzenia do chmury</button>
-        <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:6px;">
-          <button class="act-btn" onclick="closeCloudModal()">Zamknij</button>
-          <button class="act-btn danger" onclick="cloudLogout()">Wyloguj</button>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
+
 <div class="top-bar">
   <div>📊 FPL Plik</div>
   <div class="badge">
-    <span>🕒 2026-11-28 11:29</span>
+    <span>🕒 2026-11-28 12:46</span>
     <span>| Najbliższa: GW13</span>
     <span>| Forma L5: GW8–GW12 (live)<span class="info-icon" data-tip="TOP_L5" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></span>
     <span>| Mediana xGC/90: 1.478<span class="info-icon" data-tip="TOP_XGC" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></span>
     <span>| Mediana PPDA: 10.75<span class="info-icon" data-tip="TOP_PPDA" onclick="event.stopPropagation(); toggleTip(this)" onmouseenter="showTip(this)" onmouseleave="hideTip()">ⓘ</span></span>
-    <button id="cloudAuthBtn" class="cloud-btn" onclick="openCloudModal()">☁️ Zaloguj (Sync)</button>
   </div>
 </div>
 
@@ -533,8 +485,6 @@ const dataChips = [{"Klub": "Arsenal", "scores": [1.89, 1.56, 1.96, 1.44, 1.27, 
 const nextGwNum = 13;
 const defaultSquad = [{"player": "Caoimh\u00edn Kelleher", "status": "", "outGw": ""}, {"player": "Luk\u00e1s Horn\u00edcek", "status": "", "outGw": "10"}, {"player": "Michael Kayode", "status": "", "outGw": "12"}, {"player": "Riccardo Calafiori", "status": "", "outGw": ""}, {"player": "Maxim De Cuyper", "status": "", "outGw": ""}, {"player": "Leif Davis", "status": "", "outGw": ""}, {"player": "Timothy Castagne", "status": "", "outGw": "11"}, {"player": "Bryan Mbeumo", "status": "", "outGw": ""}, {"player": "Marcus Tavernier", "status": "", "outGw": ""}, {"player": "Cole Palmer", "status": "", "outGw": ""}, {"player": "Pascal Gro\u00df", "status": "", "outGw": ""}, {"player": "Jack Rudoni", "status": "", "outGw": ""}, {"player": "Thierno Barry", "status": "", "outGw": ""}, {"player": "Gonzalo Garc\u00eda", "status": "", "outGw": "11"}, {"player": "Erling Haaland", "status": "", "outGw": ""}];
 const defaultTargets = [{"player": "Alexander Isak", "status": "\ud83d\udc8e Premium", "inGw": "11"}, {"player": "\u0110or\u0111e Petrovi\u0107", "status": "\ud83d\udc8e Premium", "inGw": "10"}, {"player": "Jay Dasilva", "status": "\ud83e\udeb5 S\u0142up", "inGw": "11"}, {"player": "James Justin", "status": "\u267b\ufe0f Rotacja", "inGw": "12"}, {"player": "Nicolas Jackson", "status": "\ud83e\udeb5 S\u0142up", "inGw": "14"}];
-const SUPABASE_URL = "https://oihnwlitrjfvudlzlpec.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_O3o1QGD6BQj76Ski-GGlNg_0dRQdwYq";
 
 // ============================================================================
 // SYSTEM DYMKÓW (TOOLTIPÓW) ⓘ ORAZ PARAGONÓW xPts
@@ -848,7 +798,6 @@ function loadPlanerState() {
 
 function savePlanerState() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(planerState)); } catch (e) {}
-  scheduleCloudSave();
 }
 
 function getMySquadSet() {
@@ -1887,177 +1836,6 @@ renderFDR();
 renderKokpit();
 renderScanner();
 renderPlaner();
-
-// ============================================================================
-// SYNCHRONIZACJA W CHMURZE (SUPABASE)
-// ============================================================================
-let sbClient = null;
-let sbUser = null;
-let cloudSaveTimer = null;
-let lastCloudUpdatedAt = null;
-let cloudSyncing = false;
-
-function setCloudBtn(text, cls) {
-  const btn = document.getElementById('cloudAuthBtn');
-  if (!btn) return;
-  btn.textContent = text;
-  btn.className = 'cloud-btn ' + (cls || '');
-}
-
-function openCloudModal() {
-  const m = document.getElementById('cloudModal');
-  if (!m) return;
-  const isLogged = Boolean(sbUser);
-  document.getElementById('cloudLoginBox').style.display = isLogged ? 'none' : 'block';
-  document.getElementById('cloudAccountBox').style.display = isLogged ? 'block' : 'none';
-  document.getElementById('cloudMsg').textContent = '';
-  if (isLogged) {
-    document.getElementById('cloudUserEmail').textContent = sbUser.email || '';
-  }
-  m.style.display = 'flex';
-}
-
-function closeCloudModal() {
-  const m = document.getElementById('cloudModal');
-  if (m) m.style.display = 'none';
-}
-
-async function cloudLogin() {
-  if (!sbClient) {
-    document.getElementById('cloudMsg').textContent = 'Brak połączenia z Supabase (sprawdź klucze w generate.py).';
-    return;
-  }
-  const email = document.getElementById('cloudEmail').value.trim();
-  const password = document.getElementById('cloudPass').value;
-  const msg = document.getElementById('cloudMsg');
-  if (!email || !password) {
-    msg.textContent = 'Wpisz e-mail i hasło.';
-    return;
-  }
-  msg.style.color = '#333';
-  msg.textContent = 'Logowanie...';
-  const res = await sbClient.auth.signInWithPassword({ email, password });
-  if (res.error) {
-    msg.style.color = '#b00020';
-    msg.textContent = 'Błąd logowania: ' + res.error.message;
-    return;
-  }
-  sbUser = res.data.user;
-  document.getElementById('cloudPass').value = '';
-  closeCloudModal();
-  await pullCloudState(true);
-}
-
-async function cloudLogout() {
-  clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = null;
-  if (sbClient) await sbClient.auth.signOut();
-  sbUser = null;
-  lastCloudUpdatedAt = null;
-  setCloudBtn('☁️ Zaloguj (Sync)', '');
-  closeCloudModal();
-  showToast('Wylogowano z chmury (działasz lokalnie).');
-}
-
-function scheduleCloudSave() {
-  if (!sbClient || !sbUser) return;
-  setCloudBtn('☁️ Zapisywanie...', 'syncing');
-  clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = setTimeout(() => {
-    cloudSaveTimer = null;
-    pushCloudState(false);
-  }, 500);
-}
-
-async function pushCloudState(manual) {
-  if (!sbClient || !sbUser) return;
-  cloudSyncing = true;
-  setCloudBtn('☁️ Zapisywanie...', 'syncing');
-  try {
-    const nowIso = new Date().toISOString();
-    const res = await sbClient
-      .from('planer_state')
-      .upsert({ user_id: sbUser.id, data: planerState, updated_at: nowIso }, { onConflict: 'user_id' });
-    if (res.error) throw res.error;
-    lastCloudUpdatedAt = nowIso;
-    setCloudBtn('☁️ Zapisano', 'ok');
-    if (manual) showToast('☁️ Wysłano obecny skład do chmury!');
-  } catch (e) {
-    console.error('Supabase save error:', e);
-    setCloudBtn('⚠️ Błąd zapisu', 'err');
-    if (manual) showToast('⚠️ Błąd zapisu w chmurze: ' + (e.message || e));
-  } finally {
-    cloudSyncing = false;
-  }
-}
-
-async function pullCloudState(isInitial) {
-  if (!sbClient || !sbUser || cloudSyncing) return;
-  setCloudBtn('☁️ Pobieranie...', 'syncing');
-  try {
-    const res = await sbClient
-      .from('planer_state')
-      .select('data, updated_at')
-      .eq('user_id', sbUser.id)
-      .maybeSingle();
-    if (res.error) throw res.error;
-
-    if (!res.data || !res.data.data || !Array.isArray(res.data.data.squad)) {
-      await pushCloudState(false);
-      if (isInitial) showToast('☁️ Pierwsze logowanie — wysłano Twój skład do chmury!');
-      return;
-    }
-
-    if (!isInitial && lastCloudUpdatedAt && res.data.updated_at === lastCloudUpdatedAt) {
-      setCloudBtn('☁️ Zapisano', 'ok');
-      return;
-    }
-
-    const parsed = res.data.data;
-    parsed.benchMap = parsed.benchMap || {};
-    migrateSavedNames(parsed);
-    planerState = parsed;
-    sortSquadByPosition();
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(planerState)); } catch (e) {}
-    lastCloudUpdatedAt = res.data.updated_at;
-    renderPlaner();
-    renderKokpit();
-    setCloudBtn('☁️ Zapisano', 'ok');
-    if (isInitial) showToast('☁️ Pobrano aktualny skład z chmury!');
-  } catch (e) {
-    console.error('Supabase load error:', e);
-    setCloudBtn('⚠️ Błąd sync', 'err');
-    if (isInitial) showToast('⚠️ Nie udało się pobrać z chmury.');
-  }
-}
-
-async function initCloudSync() {
-  if (!window.supabase || !SUPABASE_URL.startsWith('http') || !SUPABASE_ANON_KEY || SUPABASE_ANON_KEY.includes('WKLEJ_TU')) {
-    const btn = document.getElementById('cloudAuthBtn');
-    if (btn) btn.style.display = 'none';
-    return;
-  }
-  sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  try {
-    const res = await sbClient.auth.getSession();
-    if (res.data && res.data.session && res.data.session.user) {
-      sbUser = res.data.session.user;
-      await pullCloudState(true);
-    } else {
-      setCloudBtn('☁️ Zaloguj (Sync)', '');
-    }
-  } catch (e) {
-    setCloudBtn('⚠️ Offline', 'err');
-  }
-
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && sbUser && !cloudSaveTimer) {
-      pullCloudState(false);
-    }
-  });
-}
-
-initCloudSync();
 </script>
 </body>
 </html>
