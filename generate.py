@@ -51,7 +51,7 @@ def safe_num_col(df, col, default=0.0):
     if col in df.columns:
         return pd.to_numeric(df[col], errors='coerce').fillna(default)
     return pd.Series(default, index=df.index, dtype=float)
-SUPABASE_URL = "https://oihnwlitrjfvudlzlpec.supabase.co/rest/v1/"
+SUPABASE_URL = "https://oihnwlitrjfvudlzlpec.supabase.co"
 SUPABASE_ANON_KEY = "sb_publishable_O3o1QGD6BQj76Ski-GGlNg_0dRQdwYq"
 
 # Budzenie Supabase przy każdym uruchomieniu GitHub Actions (baza nie uśnie po 7 dniach)
